@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="6.1.1">
+    <meta name="version" content="6.1.3">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -25,7 +25,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="font-size:48px;margin-bottom:20px;">🎮</div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v6.1.1 starting...');
+    console.log('Command Center v6.1.3 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -328,7 +328,8 @@
         async getFile(repo, path) {
             try {
                 const [owner, repoName] = repo.split('/');
-                return await this.request(`/repos/${owner}/${repoName}/contents/${path}`);
+                // Add timestamp to bust GitHub API cache
+                return await this.request(`/repos/${owner}/${repoName}/contents/${path}?_=${Date.now()}`);
             } catch { return null; }
         }
         
@@ -410,16 +411,24 @@
         async batchCommit(repo, files, message) {
             const [owner, repoName] = repo.split('/');
             
+            console.log('=== BATCH COMMIT START ===');
+            console.log('Repo:', repo);
+            console.log('Message:', message);
+            console.log('Files to commit:', files.map(f => ({ path: f.path, contentLength: f.content?.length, encoding: f.encoding })));
+            
             // Get current commit SHA
             const ref = await this.request(`/repos/${owner}/${repoName}/git/ref/heads/main`);
             const commitSha = ref.object.sha;
+            console.log('Current commit SHA:', commitSha);
             
             // Get current tree
             const commit = await this.request(`/repos/${owner}/${repoName}/git/commits/${commitSha}`);
             const treeSha = commit.tree.sha;
+            console.log('Current tree SHA:', treeSha);
             
             // Create blobs for each file
             const treeItems = await Promise.all(files.map(async (file) => {
+                console.log('Creating blob for:', file.path);
                 const blob = await this.request(`/repos/${owner}/${repoName}/git/blobs`, {
                     method: 'POST',
                     body: JSON.stringify({
@@ -427,6 +436,7 @@
                         encoding: file.encoding || 'utf-8'
                     })
                 });
+                console.log('Blob created:', file.path, '-> SHA:', blob.sha);
                 return {
                     path: file.path,
                     mode: '100644',
@@ -434,6 +444,8 @@
                     sha: blob.sha
                 };
             }));
+            
+            console.log('Tree items:', treeItems);
             
             // Create new tree
             const newTree = await this.request(`/repos/${owner}/${repoName}/git/trees`, {
@@ -443,6 +455,7 @@
                     tree: treeItems
                 })
             });
+            console.log('New tree SHA:', newTree.sha);
             
             // Create commit
             const newCommit = await this.request(`/repos/${owner}/${repoName}/git/commits`, {
@@ -454,12 +467,15 @@
                     committer: { name: 'Command Center', email: 'deploy@gameshelf.app' }
                 })
             });
+            console.log('New commit SHA:', newCommit.sha);
             
             // Update ref
-            await this.request(`/repos/${owner}/${repoName}/git/refs/heads/main`, {
+            const updatedRef = await this.request(`/repos/${owner}/${repoName}/git/refs/heads/main`, {
                 method: 'PATCH',
                 body: JSON.stringify({ sha: newCommit.sha })
             });
+            console.log('Ref updated:', updatedRef);
+            console.log('=== BATCH COMMIT COMPLETE ===');
             
             return newCommit;
         }
@@ -527,20 +543,22 @@
             
             // Always use latest apps state from ref
             const currentApps = appsRef.current;
-            console.log('Refreshing versions for apps:', Object.keys(currentApps));
+            console.log('=== REFRESHING VERSIONS FROM REPOS ===');
             
             const updates = {};
             for (const [appId, app] of Object.entries(currentApps)) {
                 if (app.testRepo) {
                     try {
+                        console.log(`[${appId}] Fetching TEST from ${app.testRepo}/${app.targetPath}...`);
                         const testFile = await github.getFile(app.testRepo, app.targetPath);
                         if (testFile) {
                             const content = atob(testFile.content);
                             const version = extractVersionFromHTML(content);
-                            console.log(`[${appId}] TEST ${app.testRepo}/${app.targetPath}: ${version || 'NO VERSION FOUND'}`);
+                            console.log(`[${appId}] TEST version from REPO: ${version || 'NO VERSION'}`);
+                            console.log(`[${appId}] TEST file SHA: ${testFile.sha}`);
                             if (version) updates[appId] = { ...updates[appId], currentTestVersion: version };
                         } else {
-                            console.log(`[${appId}] TEST ${app.testRepo}/${app.targetPath}: FILE NOT FOUND`);
+                            console.log(`[${appId}] TEST: FILE NOT FOUND`);
                         }
                     } catch (e) {
                         console.error(`[${appId}] TEST error:`, e.message);
@@ -548,14 +566,16 @@
                 }
                 if (app.prodRepo) {
                     try {
+                        console.log(`[${appId}] Fetching PROD from ${app.prodRepo}/${app.targetPath}...`);
                         const prodFile = await github.getFile(app.prodRepo, app.targetPath);
                         if (prodFile) {
                             const content = atob(prodFile.content);
                             const version = extractVersionFromHTML(content);
-                            console.log(`[${appId}] PROD ${app.prodRepo}/${app.targetPath}: ${version || 'NO VERSION FOUND'}`);
+                            console.log(`[${appId}] PROD version from REPO: ${version || 'NO VERSION'}`);
+                            console.log(`[${appId}] PROD file SHA: ${prodFile.sha}`);
                             if (version) updates[appId] = { ...updates[appId], currentProdVersion: version };
                         } else {
-                            console.log(`[${appId}] PROD ${app.prodRepo}/${app.targetPath}: FILE NOT FOUND`);
+                            console.log(`[${appId}] PROD: FILE NOT FOUND`);
                         }
                     } catch (e) {
                         console.error(`[${appId}] PROD error:`, e.message);
@@ -573,7 +593,7 @@
             });
             
             setRefreshing(false);
-            console.log('Refresh complete, updates applied:', updates);
+            console.log('=== REFRESH COMPLETE ===');
         };
         
         // Load repo files
@@ -608,6 +628,13 @@
                         version = htmlVersion || parsed.version;
                         versionSource = htmlVersion ? 'html' : (parsed.version ? 'filename' : 'none');
                     }
+                    
+                    console.log('=== FILE UPLOADED ===');
+                    console.log('Name:', file.name);
+                    console.log('Size:', file.size);
+                    console.log('Version extracted:', version);
+                    console.log('Content length:', content.length);
+                    console.log('Content preview (first 200 chars):', content.substring(0, 200));
                     
                     setStagedFiles(prev => [...prev, {
                         id: Date.now() + Math.random(),
@@ -827,9 +854,30 @@
                 
                 deployment.status = 'success';
                 deployment.url = getGitHubPagesUrl(repo);
+                
+                // Verify the deployment by fetching back from repo
+                console.log('=== VERIFYING DEPLOYMENT ===');
+                await new Promise(r => setTimeout(r, 1000)); // Wait a bit for GitHub to process
+                const verifyFile = await github.getFile(repo, files[0]?.targetPath || files[0]?.path || 'index.html');
+                if (verifyFile) {
+                    const verifyContent = atob(verifyFile.content);
+                    const verifyVersion = extractVersionFromHTML(verifyContent);
+                    console.log('Verification - version in repo after deploy:', verifyVersion);
+                    console.log('Verification - expected version:', newVersion);
+                    if (verifyVersion !== newVersion && newVersion !== 'batch') {
+                        console.error('VERSION MISMATCH! Deploy may have failed.');
+                        addStep('Verification', 'warning', `Expected ${newVersion}, found ${verifyVersion}`);
+                    } else {
+                        addStep('Verification', 'complete', `Confirmed ${verifyVersion}`);
+                    }
+                }
+                
                 if (newVersion !== 'batch') {
                     updateApp(appId, { [target === 'prod' ? 'currentProdVersion' : 'currentTestVersion']: newVersion });
                 }
+                
+                // Refresh all versions to ensure UI is in sync with repos
+                setTimeout(() => refreshAllVersions(), 500);
                 
                 // Remove deployed files from staged
                 files.forEach(f => removeStaged(f.id));
@@ -1056,7 +1104,7 @@
                             <span className="text-2xl">🎮</span>
                             <div>
                                 <h1 className="text-lg font-bold">Command Center</h1>
-                                <div className="text-xs text-slate-400">v6.1.1 • Firebase + Multi-File</div>
+                                <div className="text-xs text-slate-400">v6.1.3 • Firebase + Multi-File</div>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -1067,8 +1115,13 @@
                             </button>
                             {['dashboard', 'files', 'firebase', 'apps', 'history', 'settings'].map(v => (
                                 <button key={v} onClick={() => setView(v)}
-                                    className={`px-3 py-1.5 rounded text-sm capitalize ${view === v ? 'bg-indigo-600' : 'text-slate-400 hover:text-white'}`}>
-                                    {v === 'settings' ? <Icons.Settings /> : v === 'files' ? <Icons.Folder /> : v === 'firebase' ? <Icons.Database /> : v}
+                                    className={`px-3 py-1.5 rounded text-sm capitalize flex items-center gap-1 ${view === v ? 'bg-indigo-600' : 'text-slate-400 hover:text-white'}`}>
+                                    {v === 'settings' && <Icons.Settings />}
+                                    {v === 'files' && <><Icons.Folder /> Files</>}
+                                    {v === 'firebase' && <><Icons.Database /> Firebase</>}
+                                    {v === 'dashboard' && 'Dashboard'}
+                                    {v === 'apps' && 'Apps'}
+                                    {v === 'history' && 'History'}
                                 </button>
                             ))}
                         </div>
