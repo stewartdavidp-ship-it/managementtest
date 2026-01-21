@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="6.1.4">
+    <meta name="version" content="6.1.5">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -25,7 +25,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="font-size:48px;margin-bottom:20px;">🎮</div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v6.1.4 starting...');
+    console.log('Command Center v6.1.5 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -567,6 +567,7 @@
         const [repoFiles, setRepoFiles] = React.useState({}); // { repoFullName: { files: [], loading: bool } }
         const [selectedRepoForBrowse, setSelectedRepoForBrowse] = React.useState(null);
         const [markedForDeletion, setMarkedForDeletion] = React.useState([]); // [{ repo, path, sha }]
+        const [deployingRepos, setDeployingRepos] = React.useState({}); // { repoFullName: { version, startTime } }
         
         // Use ref to always have latest apps state for async operations
         const appsRef = React.useRef(apps);
@@ -580,7 +581,7 @@
         React.useEffect(() => { try { localStorage.setItem('cc_history_v2', JSON.stringify(deployments.slice(0, 100))); } catch {} }, [deployments]);
         
         // Monitor live site until new version appears
-        const monitorLiveDeployment = async (url, expectedVersion, onUpdate) => {
+        const monitorLiveDeployment = async (url, expectedVersion, repo, onUpdate) => {
             const maxWaitMs = 180000; // 3 minutes max
             const pollInterval = 5000; // Check every 5 seconds
             const startTime = Date.now();
@@ -588,7 +589,11 @@
             
             console.log(`=== MONITORING LIVE DEPLOYMENT ===`);
             console.log(`URL: ${url}`);
+            console.log(`Repo: ${repo}`);
             console.log(`Expected version: ${expectedVersion}`);
+            
+            // Mark repo as deploying
+            setDeployingRepos(prev => ({ ...prev, [repo]: { version: expectedVersion, startTime } }));
             
             while (Date.now() - startTime < maxWaitMs) {
                 attempts++;
@@ -610,6 +615,12 @@
                         if (liveVersion === expectedVersion) {
                             console.log(`=== DEPLOYMENT COMPLETE! Version ${liveVersion} is live ===`);
                             onUpdate('complete', `v${liveVersion} is LIVE! (${elapsed}s)`);
+                            // Clear deploying state
+                            setDeployingRepos(prev => {
+                                const next = { ...prev };
+                                delete next[repo];
+                                return next;
+                            });
                             return { success: true, duration: elapsed };
                         } else {
                             onUpdate('running', `Waiting... ${elapsed}s (live: ${liveVersion || '?'})`);
@@ -627,6 +638,12 @@
             
             console.log(`=== DEPLOYMENT MONITORING TIMEOUT ===`);
             onUpdate('warning', `Timeout - check manually`);
+            // Clear deploying state on timeout
+            setDeployingRepos(prev => {
+                const next = { ...prev };
+                delete next[repo];
+                return next;
+            });
             return { success: false, timeout: true };
         };
         
@@ -876,7 +893,7 @@
                 // Start monitoring live site for deployment completion
                 if (deployment.url && newVersion) {
                     addStep('GitHub Pages', 'running', 'Waiting for deploy...');
-                    monitorLiveDeployment(deployment.url, newVersion, (status, detail) => {
+                    monitorLiveDeployment(deployment.url, newVersion, repo, (status, detail) => {
                         addStep('GitHub Pages', status, detail);
                         setActiveDeployment({ ...deployment });
                         setDeployments(prev => prev.map(d => d.id === deployment.id ? { ...deployment } : d));
@@ -1005,7 +1022,7 @@
                 // Start monitoring live site for deployment completion
                 if (deployment.url && newVersion !== 'batch') {
                     addStep('GitHub Pages', 'running', 'Waiting for deploy...');
-                    monitorLiveDeployment(deployment.url, newVersion, (status, detail) => {
+                    monitorLiveDeployment(deployment.url, newVersion, repo, (status, detail) => {
                         addStep('GitHub Pages', status, detail);
                         setActiveDeployment({ ...deployment });
                         setDeployments(prev => prev.map(d => d.id === deployment.id ? { ...deployment } : d));
@@ -1147,7 +1164,7 @@
                 // Start monitoring live site for deployment completion
                 if (deployment.url && testVersion) {
                     addStep('GitHub Pages', 'running', 'Waiting for deploy...');
-                    monitorLiveDeployment(deployment.url, testVersion, (status, detail) => {
+                    monitorLiveDeployment(deployment.url, testVersion, app.prodRepo, (status, detail) => {
                         addStep('GitHub Pages', status, detail);
                         setActiveDeployment({ ...deployment });
                         setDeployments(prev => prev.map(d => d.id === deployment.id ? { ...deployment } : d));
@@ -1229,7 +1246,7 @@
                 // Start monitoring live site for deployment completion
                 if (deployment.url && targetVersion) {
                     addStep('GitHub Pages', 'running', 'Waiting for deploy...');
-                    monitorLiveDeployment(deployment.url, targetVersion, (status, detail) => {
+                    monitorLiveDeployment(deployment.url, targetVersion, repo, (status, detail) => {
                         addStep('GitHub Pages', status, detail);
                         setActiveDeployment({ ...deployment });
                         setDeployments(prev => prev.map(d => d.id === deployment.id ? { ...deployment } : d));
@@ -1255,7 +1272,7 @@
                             <span className="text-2xl">🎮</span>
                             <div>
                                 <h1 className="text-lg font-bold">Command Center</h1>
-                                <div className="text-xs text-slate-400">v6.1.4 • Firebase + Multi-File</div>
+                                <div className="text-xs text-slate-400">v6.1.5 • Firebase + Multi-File</div>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -1296,6 +1313,7 @@
                             setActiveDeployment={setActiveDeployment}
                             refreshing={refreshing}
                             onUpdateStagedFile={updateStagedFile}
+                            deployingRepos={deployingRepos}
                         />
                     )}
                     
@@ -1529,7 +1547,7 @@
     // DASHBOARD VIEW
     // =========================================================================
     
-    function DashboardView({ apps, stagedFiles, github, onFileDrop, onRemove, onDeploy, onBatchDeploy, onPromote, activeDeployment, setActiveDeployment, refreshing, onUpdateStagedFile }) {
+    function DashboardView({ apps, stagedFiles, github, onFileDrop, onRemove, onDeploy, onBatchDeploy, onPromote, activeDeployment, setActiveDeployment, refreshing, onUpdateStagedFile, deployingRepos }) {
         const [selectedFileIds, setSelectedFileIds] = React.useState(new Set());
         const [deployTarget, setDeployTarget] = React.useState({ appId: 'management', target: 'test' });
         const configuredApps = Object.values(apps).filter(a => a.testRepo || a.prodRepo);
@@ -1766,6 +1784,8 @@
                                 const canPromote = app.testRepo && app.prodRepo && app.currentTestVersion && app.currentTestVersion !== app.currentProdVersion;
                                 const testUrl = getGitHubPagesUrl(app.testRepo);
                                 const prodUrl = getGitHubPagesUrl(app.prodRepo);
+                                const testDeploying = deployingRepos && deployingRepos[app.testRepo];
+                                const prodDeploying = deployingRepos && deployingRepos[app.prodRepo];
                                 
                                 return (
                                     <div key={app.id} className="p-3 bg-slate-700/50 rounded-lg">
@@ -1789,7 +1809,9 @@
                                                     TEST: {formatVersion(app.currentTestVersion)}
                                                 </span>
                                                 {testUrl && (
-                                                    <a href={testUrl} target="_blank" className="p-1 hover:bg-slate-600 rounded" title="Open TEST">
+                                                    <a href={testUrl} target="_blank" 
+                                                        className={`p-1 rounded flex items-center ${testDeploying ? 'bg-red-900/50 text-red-400 animate-pulse' : 'hover:bg-slate-600 text-slate-400'}`} 
+                                                        title={testDeploying ? `Deploying v${testDeploying.version}...` : 'Open TEST'}>
                                                         <Icons.Play />
                                                     </a>
                                                 )}
@@ -1800,7 +1822,9 @@
                                                     PROD: {formatVersion(app.currentProdVersion)}
                                                 </span>
                                                 {prodUrl && (
-                                                    <a href={prodUrl} target="_blank" className="p-1 hover:bg-slate-600 rounded" title="Open PROD">
+                                                    <a href={prodUrl} target="_blank" 
+                                                        className={`p-1 rounded flex items-center ${prodDeploying ? 'bg-red-900/50 text-red-400 animate-pulse' : 'hover:bg-slate-600 text-slate-400'}`} 
+                                                        title={prodDeploying ? `Deploying v${prodDeploying.version}...` : 'Open PROD'}>
                                                         <Icons.Play />
                                                     </a>
                                                 )}
