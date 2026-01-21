@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="6.1.3">
+    <meta name="version" content="6.1.4">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -25,7 +25,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="font-size:48px;margin-bottom:20px;">🎮</div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v6.1.3 starting...');
+    console.log('Command Center v6.1.4 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -407,6 +407,68 @@
             return { enabled: true };
         }
         
+        async getPagesDeploymentStatus(repo) {
+            const [owner, repoName] = repo.split('/');
+            try {
+                // Get latest pages build
+                const build = await this.request(`/repos/${owner}/${repoName}/pages/builds/latest`);
+                return {
+                    status: build.status, // 'queued', 'building', 'built', 'errored'
+                    createdAt: build.created_at,
+                    updatedAt: build.updated_at,
+                    commitSha: build.commit,
+                    duration: build.duration,
+                    error: build.error?.message
+                };
+            } catch (e) {
+                console.error('Failed to get pages status:', e);
+                return null;
+            }
+        }
+        
+        async triggerPagesBuild(repo) {
+            const [owner, repoName] = repo.split('/');
+            try {
+                await this.request(`/repos/${owner}/${repoName}/pages/builds`, {
+                    method: 'POST'
+                });
+                return true;
+            } catch (e) {
+                console.error('Failed to trigger pages build:', e);
+                return false;
+            }
+        }
+        
+        async waitForPagesDeployment(repo, commitSha, maxWaitMs = 120000, onStatus = null) {
+            const startTime = Date.now();
+            let lastStatus = null;
+            
+            while (Date.now() - startTime < maxWaitMs) {
+                const status = await this.getPagesDeploymentStatus(repo);
+                
+                if (status && status.status !== lastStatus) {
+                    lastStatus = status.status;
+                    if (onStatus) onStatus(status);
+                }
+                
+                if (status?.status === 'built') {
+                    // Verify it's the right commit
+                    if (!commitSha || status.commitSha === commitSha) {
+                        return { success: true, status };
+                    }
+                }
+                
+                if (status?.status === 'errored') {
+                    return { success: false, error: status.error, status };
+                }
+                
+                // Wait 3 seconds before checking again
+                await new Promise(r => setTimeout(r, 3000));
+            }
+            
+            return { success: false, error: 'Timeout waiting for deployment', status: lastStatus };
+        }
+        
         // Batch commit multiple files in one commit
         async batchCommit(repo, files, message) {
             const [owner, repoName] = repo.split('/');
@@ -516,6 +578,57 @@
         React.useEffect(() => { try { if (githubToken) localStorage.setItem('cc_token', githubToken); } catch {} }, [githubToken]);
         React.useEffect(() => { try { localStorage.setItem('cc_apps_v6', JSON.stringify(apps)); } catch {} }, [apps]);
         React.useEffect(() => { try { localStorage.setItem('cc_history_v2', JSON.stringify(deployments.slice(0, 100))); } catch {} }, [deployments]);
+        
+        // Monitor live site until new version appears
+        const monitorLiveDeployment = async (url, expectedVersion, onUpdate) => {
+            const maxWaitMs = 180000; // 3 minutes max
+            const pollInterval = 5000; // Check every 5 seconds
+            const startTime = Date.now();
+            let attempts = 0;
+            
+            console.log(`=== MONITORING LIVE DEPLOYMENT ===`);
+            console.log(`URL: ${url}`);
+            console.log(`Expected version: ${expectedVersion}`);
+            
+            while (Date.now() - startTime < maxWaitMs) {
+                attempts++;
+                const elapsed = Math.round((Date.now() - startTime) / 1000);
+                
+                try {
+                    // Fetch the live site with cache-busting
+                    const response = await fetch(`${url}?_nocache=${Date.now()}`, {
+                        cache: 'no-store',
+                        headers: { 'Cache-Control': 'no-cache' }
+                    });
+                    
+                    if (response.ok) {
+                        const html = await response.text();
+                        const liveVersion = extractVersionFromHTML(html);
+                        
+                        console.log(`[${elapsed}s] Live version: ${liveVersion || 'unknown'}, expecting: ${expectedVersion}`);
+                        
+                        if (liveVersion === expectedVersion) {
+                            console.log(`=== DEPLOYMENT COMPLETE! Version ${liveVersion} is live ===`);
+                            onUpdate('complete', `v${liveVersion} is LIVE! (${elapsed}s)`);
+                            return { success: true, duration: elapsed };
+                        } else {
+                            onUpdate('running', `Waiting... ${elapsed}s (live: ${liveVersion || '?'})`);
+                        }
+                    } else {
+                        onUpdate('running', `Waiting... ${elapsed}s (site loading)`);
+                    }
+                } catch (e) {
+                    console.log(`[${elapsed}s] Fetch error:`, e.message);
+                    onUpdate('running', `Waiting... ${elapsed}s`);
+                }
+                
+                await new Promise(r => setTimeout(r, pollInterval));
+            }
+            
+            console.log(`=== DEPLOYMENT MONITORING TIMEOUT ===`);
+            onUpdate('warning', `Timeout - check manually`);
+            return { success: false, timeout: true };
+        };
         
         // Fetch repos and auto-refresh versions on load
         React.useEffect(() => {
@@ -760,6 +873,16 @@
                 updateApp(appId, { [target === 'prod' ? 'currentProdVersion' : 'currentTestVersion']: newVersion });
                 removeStaged(file.id);
                 
+                // Start monitoring live site for deployment completion
+                if (deployment.url && newVersion) {
+                    addStep('GitHub Pages', 'running', 'Waiting for deploy...');
+                    monitorLiveDeployment(deployment.url, newVersion, (status, detail) => {
+                        addStep('GitHub Pages', status, detail);
+                        setActiveDeployment({ ...deployment });
+                        setDeployments(prev => prev.map(d => d.id === deployment.id ? { ...deployment } : d));
+                    });
+                }
+                
             } catch (error) {
                 deployment.status = 'failed';
                 deployment.error = error.message;
@@ -868,7 +991,7 @@
                         console.error('VERSION MISMATCH! Deploy may have failed.');
                         addStep('Verification', 'warning', `Expected ${newVersion}, found ${verifyVersion}`);
                     } else {
-                        addStep('Verification', 'complete', `Confirmed ${verifyVersion}`);
+                        addStep('Verification', 'complete', `Confirmed ${verifyVersion} in repo`);
                     }
                 }
                 
@@ -878,6 +1001,16 @@
                 
                 // Refresh all versions to ensure UI is in sync with repos
                 setTimeout(() => refreshAllVersions(), 500);
+                
+                // Start monitoring live site for deployment completion
+                if (deployment.url && newVersion !== 'batch') {
+                    addStep('GitHub Pages', 'running', 'Waiting for deploy...');
+                    monitorLiveDeployment(deployment.url, newVersion, (status, detail) => {
+                        addStep('GitHub Pages', status, detail);
+                        setActiveDeployment({ ...deployment });
+                        setDeployments(prev => prev.map(d => d.id === deployment.id ? { ...deployment } : d));
+                    });
+                }
                 
                 // Remove deployed files from staged
                 files.forEach(f => removeStaged(f.id));
@@ -1011,6 +1144,16 @@
                 // Force refresh to ensure UI is in sync
                 setTimeout(() => refreshAllVersions(), 1000);
                 
+                // Start monitoring live site for deployment completion
+                if (deployment.url && testVersion) {
+                    addStep('GitHub Pages', 'running', 'Waiting for deploy...');
+                    monitorLiveDeployment(deployment.url, testVersion, (status, detail) => {
+                        addStep('GitHub Pages', status, detail);
+                        setActiveDeployment({ ...deployment });
+                        setDeployments(prev => prev.map(d => d.id === deployment.id ? { ...deployment } : d));
+                    });
+                }
+                
             } catch (error) {
                 deployment.status = 'failed';
                 deployment.error = error.message;
@@ -1078,12 +1221,20 @@
                 deployment.commitSha = result.commit.sha;
                 addStep('Rolling back', 'complete', result.commit.sha.substring(0, 7));
                 
-                addStep('GitHub Pages', 'complete', 'Deploying...');
-                
                 deployment.status = 'success';
                 deployment.url = getGitHubPagesUrl(repo);
                 const versionKey = deploymentToRollbackTo.target === 'prod' ? 'currentProdVersion' : 'currentTestVersion';
                 updateApp(deploymentToRollbackTo.appId, { [versionKey]: targetVersion });
+                
+                // Start monitoring live site for deployment completion
+                if (deployment.url && targetVersion) {
+                    addStep('GitHub Pages', 'running', 'Waiting for deploy...');
+                    monitorLiveDeployment(deployment.url, targetVersion, (status, detail) => {
+                        addStep('GitHub Pages', status, detail);
+                        setActiveDeployment({ ...deployment });
+                        setDeployments(prev => prev.map(d => d.id === deployment.id ? { ...deployment } : d));
+                    });
+                }
                 
             } catch (error) {
                 deployment.status = 'failed';
@@ -1104,7 +1255,7 @@
                             <span className="text-2xl">🎮</span>
                             <div>
                                 <h1 className="text-lg font-bold">Command Center</h1>
-                                <div className="text-xs text-slate-400">v6.1.3 • Firebase + Multi-File</div>
+                                <div className="text-xs text-slate-400">v6.1.4 • Firebase + Multi-File</div>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
