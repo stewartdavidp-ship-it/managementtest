@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="6.7.0">
+    <meta name="version" content="6.7.1">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -25,7 +25,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="font-size:48px;margin-bottom:20px;">🎮</div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v6.7.0 starting...');
+    console.log('Command Center v6.7.1 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -195,7 +195,7 @@
             );
         }
         
-        // Fix const VERSION = 'x.x.x' (but not GAMESHELF_VERSION)
+        // Fix const VERSION = '6.7.1' (but not GAMESHELF_VERSION)
         fixed = fixed.replace(
             /(const\s+VERSION\s*=\s*['"])[^'"]*(['"])/g,
             `$1${targetVersion}$2`
@@ -1570,7 +1570,7 @@
                             <span className="text-2xl">🎮</span>
                             <div>
                                 <h1 className="text-lg font-bold">Command Center</h1>
-                                <div className="text-xs text-slate-400">v6.7.0 • Full Issue Integration</div>
+                                <div className="text-xs text-slate-400">v6.7.1 • Full Issue Integration</div>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -4036,13 +4036,13 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                     <h2 className="text-lg font-semibold mb-4">🧪 Testing & Issues</h2>
                     
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                        <a href="https://stewartdavidp-ship-it.github.io/gameshelftest/testplan-v3.html" 
+                        <a href="https://stewartdavidp-ship-it.github.io/gameshelf-testplan/" 
                            target="_blank"
                            className="p-3 bg-indigo-900/30 border border-indigo-700 rounded-lg text-center hover:bg-indigo-900/50 transition-colors">
                             <div className="text-2xl mb-1">📋</div>
                             <div className="text-sm">Test Plan</div>
                         </a>
-                        <a href="https://stewartdavidp-ship-it.github.io/gameshelftest/issue-tracker.html" 
+                        <a href="https://stewartdavidp-ship-it.github.io/gameshelf-testplan/issue-tracker.html" 
                            target="_blank"
                            className="p-3 bg-red-900/30 border border-red-700 rounded-lg text-center hover:bg-red-900/50 transition-colors">
                             <div className="text-2xl mb-1">🐛</div>
@@ -4544,12 +4544,12 @@ const pushIssueToCommandCenter = async (testResult) => {
                             </details>
                             
                             <div className="flex gap-2">
-                                <a href="https://stewartdavidp-ship-it.github.io/gameshelftest/testplan-v3.html"
+                                <a href="https://stewartdavidp-ship-it.github.io/gameshelf-testplan/"
                                    target="_blank"
                                    className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-center text-sm">
                                     📋 Open Test Plan
                                 </a>
-                                <a href="https://stewartdavidp-ship-it.github.io/gameshelftest/issue-tracker.html"
+                                <a href="https://stewartdavidp-ship-it.github.io/gameshelf-testplan/issue-tracker.html"
                                    target="_blank"
                                    className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-center text-sm">
                                     🐛 Legacy Tracker
