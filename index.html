@@ -1682,7 +1682,7 @@
                     console.log('Name:', file.name);
                     
                     if (typeof JSZip === 'undefined') {
-                        alert('ZIP support not available');
+                        await showAlert('ZIP support not available', 'Error');
                         return;
                     }
                     
@@ -1775,7 +1775,7 @@
                         
                     } catch (err) {
                         console.error('ZIP extraction failed:', err);
-                        alert('Failed to extract ZIP: ' + err.message);
+                        showAlert('Failed to extract ZIP: ' + err.message, 'ZIP Error');
                     }
                     return;
                 }
@@ -1882,11 +1882,11 @@
         
         // Deploy single file (legacy support)
         const handleDeploy = async (file, appId, target, forceDeploy = false) => {
-            if (!github) return alert('Configure GitHub token');
+            if (!github) { await showAlert('Configure GitHub token', 'Configuration Required'); return; }
             
             const app = apps[appId];
             const repo = target === 'prod' ? app.prodRepo : app.testRepo;
-            if (!repo) return alert(`Configure ${target} repo`);
+            if (!repo) { await showAlert(`Configure ${target} repo`, 'Configuration Required'); return; }
             
             const currentVersion = await fetchCurrentVersion(repo, app.targetPath);
             const newVersion = file.version;
@@ -2239,7 +2239,7 @@
             
             // Show result
             if (failCount > 0) {
-                alert(`Deleted ${successCount} file(s), ${failCount} failed`);
+                await showAlert(`Deleted ${successCount} file(s), ${failCount} failed`, 'Delete Results');
             }
         };
         
@@ -2514,7 +2514,7 @@
                             <Icons.GameShelfLogo size={32} />
                             <div>
                                 <h1 className="text-lg font-bold">Command Center</h1>
-                                <div className="text-xs text-slate-400">v7.1.6 • Fix batch deploy verification URI error</div>
+                                <div className="text-xs text-slate-400">v7.1.6 • Deploy controls at top, custom dark mode dialogs</div>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -2577,11 +2577,12 @@
                             selectedRepo={selectedRepoForBrowse} onSelectRepo={setSelectedRepoForBrowse}
                             markedForDeletion={markedForDeletion} setMarkedForDeletion={setMarkedForDeletion}
                             onDeleteMarked={() => setModal({ type: 'confirmDelete' })}
+                            showAlert={showAlert}
                         />
                     )}
                     
                     {view === 'firebase' && (
-                        <FirebaseView />
+                        <FirebaseView showAlert={showAlert} showConfirm={showConfirm} showPrompt={showPrompt} />
                     )}
                     
                     {view === 'apps' && <AppsView apps={apps} repos={availableRepos} onUpdate={updateApp} />}
@@ -2601,11 +2602,12 @@
                             deployments={deployments}
                             github={github}
                             onFileDrop={handleFileDrop}
+                            showAlert={showAlert}
                         />
                     )}
                     
                     {view === 'issues' && (
-                        <IssuesView apps={apps} deployments={deployments} />
+                        <IssuesView apps={apps} deployments={deployments} showAlert={showAlert} showConfirm={showConfirm} showPrompt={showPrompt} />
                     )}
                     
                     {view === 'config' && (
@@ -2929,6 +2931,7 @@
         const [selectedFileIds, setSelectedFileIds] = React.useState(new Set());
         const [deployTarget, setDeployTarget] = React.useState({ appId: 'management', target: 'test' });
         const [isDeploying, setIsDeploying] = React.useState(false);
+        const [deployCompleted, setDeployCompleted] = React.useState(false);
         const configuredApps = Object.values(apps).filter(a => a.testRepo || a.prodRepo);
         
         // Auto-select detected app when staging new files
@@ -2946,12 +2949,23 @@
             }
         }, [stagedFiles.length]); // Only when file count changes (new file added)
         
-        // Reset deploying state when activeDeployment starts (button feedback complete)
+        // Reset deploying state when activeDeployment starts, track completion
         React.useEffect(() => {
             if (activeDeployment) {
                 setIsDeploying(false);
+                // Mark as completed when deploy succeeds
+                if (activeDeployment.status === 'success') {
+                    setDeployCompleted(true);
+                }
             }
-        }, [activeDeployment]);
+        }, [activeDeployment, activeDeployment?.status]);
+        
+        // Reset deployCompleted when staging new files
+        React.useEffect(() => {
+            if (stagedFiles.length > 0) {
+                setDeployCompleted(false);
+            }
+        }, [stagedFiles.length]);
         
         // Expanded app menus state
         const [expandedApps, setExpandedApps] = React.useState({});
@@ -3155,6 +3169,132 @@
                                     </button>
                                 </div>
                             </div>
+                            
+                            {/* Batch Deploy Controls - At top for easy access */}
+                            {selectedFiles.length > 0 && (() => {
+                                // Check if selected files have detected apps
+                                const detectedApps = selectedFiles
+                                    .filter(f => f.appDetection)
+                                    .map(f => ({ file: f.name, app: f.suggestedApp, confidence: f.appDetection.confidence }));
+                                
+                                const uniqueDetected = [...new Set(detectedApps.map(d => d.app))];
+                                const primaryDetected = detectedApps.find(d => d.confidence === 'high')?.app || uniqueDetected[0];
+                                
+                                // Check for mismatch
+                                const hasMismatch = primaryDetected && deployTarget.appId !== primaryDetected;
+                                const hasConflict = uniqueDetected.length > 1;
+                                
+                                return (
+                                <div className="mb-4 p-4 bg-slate-900 rounded-lg border border-indigo-500">
+                                    <div className="text-sm font-medium mb-3 flex items-center gap-2">
+                                        <Icons.Upload /> Deploy {selectedFiles.length} selected file{selectedFiles.length !== 1 ? 's' : ''}
+                                    </div>
+                                    
+                                    {/* Auto-detected app suggestion */}
+                                    {primaryDetected && !hasConflict && (
+                                        <div className={`mb-3 p-2 rounded text-sm flex items-center justify-between ${
+                                            hasMismatch ? 'bg-amber-900/50 border border-amber-600' : 'bg-green-900/50 border border-green-600'
+                                        }`}>
+                                            <span className="flex items-center gap-2">
+                                                {hasMismatch ? '⚠️' : '🎯'} Detected: <strong className="flex items-center gap-1"><AppIcon icon={apps[primaryDetected]?.icon} size={18} /> {apps[primaryDetected]?.name}</strong>
+                                            </span>
+                                            {hasMismatch && (
+                                                <button 
+                                                    onClick={() => setDeployTarget(p => ({ ...p, appId: primaryDetected }))}
+                                                    className="px-2 py-1 bg-green-700 hover:bg-green-600 rounded text-xs">
+                                                    Use Detected
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                    
+                                    {/* Conflict warning */}
+                                    {hasConflict && (
+                                        <div className="mb-3 p-2 bg-red-900/50 border border-red-600 rounded text-sm">
+                                            ⚠️ Multiple apps detected in selection: {uniqueDetected.map(a => apps[a]?.name).join(', ')}
+                                        </div>
+                                    )}
+                                    
+                                    <div className="grid grid-cols-2 gap-3 mb-3">
+                                        <select value={deployTarget.appId} onChange={e => setDeployTarget(p => ({ ...p, appId: e.target.value }))}
+                                            className={`p-2 border rounded text-sm ${
+                                                hasMismatch 
+                                                    ? 'bg-amber-900 border-amber-500' 
+                                                    : 'bg-slate-700 border-slate-600'
+                                            }`}>
+                                            {Object.values(apps).map(a => <option key={a.id} value={a.id}>{getAppEmoji(a.icon)} {a.name}</option>)}
+                                        </select>
+                                        <select value={deployTarget.target} onChange={e => setDeployTarget(p => ({ ...p, target: e.target.value }))}
+                                            className="p-2 bg-slate-700 border border-slate-600 rounded text-sm">
+                                            <option value="test">🧪 TEST</option>
+                                            <option value="prod">🚀 PROD</option>
+                                        </select>
+                                    </div>
+                                    
+                                    {/* Mismatch warning on deploy button */}
+                                    {hasMismatch && (
+                                        <div className="mb-2 text-xs text-amber-400">
+                                            ⚠️ You're deploying to {apps[deployTarget.appId]?.name} but file appears to be {apps[primaryDetected]?.name}
+                                        </div>
+                                    )}
+                                    
+                                    <button onClick={async () => {
+                                        // Reset completed state when starting new deploy
+                                        setDeployCompleted(false);
+                                        
+                                        // Show confirmation if mismatch detected
+                                        if (hasMismatch) {
+                                            const confirmed = await showConfirm(
+                                                `File detected as ${apps[primaryDetected]?.name} but deploying to ${apps[deployTarget.appId]?.name}. Continue anyway?`,
+                                                'Deploy Mismatch Warning'
+                                            );
+                                            if (confirmed) {
+                                                setIsDeploying(true);
+                                                console.log('Deploying files:', selectedFiles.map(f => ({ name: f.name, id: f.id, size: f.content?.length })));
+                                                onBatchDeploy(selectedFiles, deployTarget.appId, deployTarget.target);
+                                                // Always reset to TEST after initiating deploy (safety default)
+                                                setDeployTarget(prev => ({ ...prev, target: 'test' }));
+                                            }
+                                        } else {
+                                            setIsDeploying(true);
+                                            console.log('Deploying files:', selectedFiles.map(f => ({ name: f.name, id: f.id, size: f.content?.length })));
+                                            onBatchDeploy(selectedFiles, deployTarget.appId, deployTarget.target);
+                                            // Always reset to TEST after initiating deploy (safety default)
+                                            setDeployTarget(prev => ({ ...prev, target: 'test' }));
+                                        }
+                                    }}
+                                        disabled={!github || isDeploying}
+                                        className={`w-full p-3 rounded font-medium flex items-center justify-center gap-2 transition-all ${
+                                            isDeploying
+                                                ? 'bg-cyan-500 cursor-wait'
+                                                : deployCompleted
+                                                    ? 'bg-orange-500 hover:bg-orange-600'
+                                                    : hasMismatch 
+                                                        ? 'bg-amber-600 hover:bg-amber-700' 
+                                                        : deployTarget.target === 'prod' 
+                                                            ? 'bg-green-600 hover:bg-green-700' 
+                                                            : 'bg-blue-600 hover:bg-blue-700'
+                                        }`}>
+                                        {isDeploying ? (
+                                            <>
+                                                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                                Deploying...
+                                            </>
+                                        ) : deployCompleted ? (
+                                            <>
+                                                ✓ Deployed! Click to deploy again
+                                            </>
+                                        ) : (
+                                            <>
+                                                {hasMismatch && '⚠️ '}{selectedFiles.length === 1 ? 'Deploy File' : `Batch Deploy ${selectedFiles.length} Files`}
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                                );
+                            })()}
+                            
+                            {/* File List */}
                             <div className="space-y-2">
                                 {stagedFiles.map(f => {
                                     const isHtml = f.name.endsWith('.html');
@@ -3323,119 +3463,6 @@
                                     );
                                 })}
                             </div>
-                            
-                            {/* Batch Deploy Controls */}
-                            {selectedFiles.length > 0 && (() => {
-                                // Check if selected files have detected apps
-                                const detectedApps = selectedFiles
-                                    .filter(f => f.appDetection)
-                                    .map(f => ({ file: f.name, app: f.suggestedApp, confidence: f.appDetection.confidence }));
-                                
-                                const uniqueDetected = [...new Set(detectedApps.map(d => d.app))];
-                                const primaryDetected = detectedApps.find(d => d.confidence === 'high')?.app || uniqueDetected[0];
-                                
-                                // Check for mismatch
-                                const hasMismatch = primaryDetected && deployTarget.appId !== primaryDetected;
-                                const hasConflict = uniqueDetected.length > 1;
-                                
-                                return (
-                                <div className="mt-4 p-4 bg-slate-900 rounded-lg border border-slate-600">
-                                    <div className="text-sm font-medium mb-3">Deploy {selectedFiles.length} selected file{selectedFiles.length !== 1 ? 's' : ''}</div>
-                                    
-                                    {/* Auto-detected app suggestion */}
-                                    {primaryDetected && !hasConflict && (
-                                        <div className={`mb-3 p-2 rounded text-sm flex items-center justify-between ${
-                                            hasMismatch ? 'bg-amber-900/50 border border-amber-600' : 'bg-green-900/50 border border-green-600'
-                                        }`}>
-                                            <span className="flex items-center gap-2">
-                                                {hasMismatch ? '⚠️' : '🎯'} Detected: <strong className="flex items-center gap-1"><AppIcon icon={apps[primaryDetected]?.icon} size={18} /> {apps[primaryDetected]?.name}</strong>
-                                            </span>
-                                            {hasMismatch && (
-                                                <button 
-                                                    onClick={() => setDeployTarget(p => ({ ...p, appId: primaryDetected }))}
-                                                    className="px-2 py-1 bg-green-700 hover:bg-green-600 rounded text-xs">
-                                                    Use Detected
-                                                </button>
-                                            )}
-                                        </div>
-                                    )}
-                                    
-                                    {/* Conflict warning */}
-                                    {hasConflict && (
-                                        <div className="mb-3 p-2 bg-red-900/50 border border-red-600 rounded text-sm">
-                                            ⚠️ Multiple apps detected in selection: {uniqueDetected.map(a => apps[a]?.name).join(', ')}
-                                        </div>
-                                    )}
-                                    
-                                    <div className="grid grid-cols-2 gap-3 mb-3">
-                                        <select value={deployTarget.appId} onChange={e => setDeployTarget(p => ({ ...p, appId: e.target.value }))}
-                                            className={`p-2 border rounded text-sm ${
-                                                hasMismatch 
-                                                    ? 'bg-amber-900 border-amber-500' 
-                                                    : 'bg-slate-700 border-slate-600'
-                                            }`}>
-                                            {Object.values(apps).map(a => <option key={a.id} value={a.id}>{getAppEmoji(a.icon)} {a.name}</option>)}
-                                        </select>
-                                        <select value={deployTarget.target} onChange={e => setDeployTarget(p => ({ ...p, target: e.target.value }))}
-                                            className="p-2 bg-slate-700 border border-slate-600 rounded text-sm">
-                                            <option value="test">🧪 TEST</option>
-                                            <option value="prod">🚀 PROD</option>
-                                        </select>
-                                    </div>
-                                    
-                                    {/* Mismatch warning on deploy button */}
-                                    {hasMismatch && (
-                                        <div className="mb-2 text-xs text-amber-400">
-                                            ⚠️ You're deploying to {apps[deployTarget.appId]?.name} but file appears to be {apps[primaryDetected]?.name}
-                                        </div>
-                                    )}
-                                    
-                                    <button onClick={async () => {
-                                        // Show confirmation if mismatch detected
-                                        if (hasMismatch) {
-                                            const confirmed = await showConfirm(
-                                                `File detected as ${apps[primaryDetected]?.name} but deploying to ${apps[deployTarget.appId]?.name}. Continue anyway?`,
-                                                'Deploy Mismatch Warning'
-                                            );
-                                            if (confirmed) {
-                                                setIsDeploying(true);
-                                                console.log('Deploying files:', selectedFiles.map(f => ({ name: f.name, id: f.id, size: f.content?.length })));
-                                                onBatchDeploy(selectedFiles, deployTarget.appId, deployTarget.target);
-                                                // Always reset to TEST after initiating deploy (safety default)
-                                                setDeployTarget(prev => ({ ...prev, target: 'test' }));
-                                            }
-                                        } else {
-                                            setIsDeploying(true);
-                                            console.log('Deploying files:', selectedFiles.map(f => ({ name: f.name, id: f.id, size: f.content?.length })));
-                                            onBatchDeploy(selectedFiles, deployTarget.appId, deployTarget.target);
-                                            // Always reset to TEST after initiating deploy (safety default)
-                                            setDeployTarget(prev => ({ ...prev, target: 'test' }));
-                                        }
-                                    }}
-                                        disabled={!github || isDeploying}
-                                        className={`w-full p-3 rounded font-medium flex items-center justify-center gap-2 transition-all ${
-                                            isDeploying
-                                                ? 'bg-cyan-500 cursor-wait'
-                                                : hasMismatch 
-                                                    ? 'bg-amber-600 hover:bg-amber-700' 
-                                                    : deployTarget.target === 'prod' 
-                                                        ? 'bg-green-600 hover:bg-green-700' 
-                                                        : 'bg-blue-600 hover:bg-blue-700'
-                                        }`}>
-                                        {isDeploying ? (
-                                            <>
-                                                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                                                Deploying...
-                                            </>
-                                        ) : (
-                                            <>
-                                                {hasMismatch && '⚠️ '}{selectedFiles.length === 1 ? 'Deploy File' : `Batch Deploy ${selectedFiles.length} Files`}
-                                            </>
-                                        )}
-                                    </button>
-                                </div>
-                                );
-                            })()}
                         </div>
                     )}
                     
@@ -3819,7 +3846,7 @@
     // REPO FILES VIEW
     // =========================================================================
     
-    function RepoFilesView({ apps, github, repoFiles, onLoadRepo, selectedRepo, onSelectRepo, markedForDeletion, setMarkedForDeletion, onDeleteMarked }) {
+    function RepoFilesView({ apps, github, repoFiles, onLoadRepo, selectedRepo, onSelectRepo, markedForDeletion, setMarkedForDeletion, onDeleteMarked, showAlert }) {
         const configuredApps = Object.values(apps).filter(a => a.testRepo || a.prodRepo);
         const allRepos = [...new Set(configuredApps.flatMap(a => [a.testRepo, a.prodRepo].filter(Boolean)))];
         
@@ -3857,7 +3884,7 @@
                 URL.revokeObjectURL(url);
             } catch (err) {
                 console.error('Download failed:', err);
-                alert('Download failed: ' + err.message);
+                showAlert('Download failed: ' + err.message, 'Download Error');
             }
         };
         
@@ -3937,7 +3964,7 @@
                 setDownloadingPackage(false);
             } catch (err) {
                 console.error('Deploy package download failed:', err);
-                alert('Deploy package download failed: ' + err.message);
+                showAlert('Deploy package download failed: ' + err.message, 'Download Error');
                 setDownloadingPackage(false);
             }
         };
@@ -4144,7 +4171,7 @@
     // FIREBASE VIEW
     // =========================================================================
     
-    function FirebaseView() {
+    function FirebaseView({ showAlert, showConfirm, showPrompt }) {
         const [user, setUser] = React.useState(null);
         const [authLoading, setAuthLoading] = React.useState(true);
         const [dbPath, setDbPath] = React.useState('');
@@ -4210,7 +4237,7 @@
         
         const signInWithGoogle = async () => {
             if (isFileProtocol) {
-                alert('Google Sign-in requires HTTPS. Please open this app from GitHub Pages or a web server.\n\nOr use the "Manual UID" option below for read-only access to public data.');
+                showAlert('Google Sign-in requires HTTPS. Please open this app from GitHub Pages or a web server.\n\nOr use the "Manual UID" option below for read-only access to public data.', 'HTTPS Required');
                 return;
             }
             
@@ -4220,9 +4247,9 @@
             } catch (e) {
                 console.error('Sign in error:', e);
                 if (e.code === 'auth/operation-not-supported-in-this-environment') {
-                    alert('Google Sign-in not supported here. Please:\n\n1. Open from GitHub Pages URL, or\n2. Use "Manual UID" for limited access');
+                    showAlert('Google Sign-in not supported here. Please:\n\n1. Open from GitHub Pages URL, or\n2. Use "Manual UID" for limited access', 'Sign-in Not Supported');
                 } else {
-                    alert('Sign in failed: ' + e.message);
+                    showAlert('Sign in failed: ' + e.message, 'Sign-in Error');
                 }
             }
         };
@@ -4306,19 +4333,20 @@
                 setEditingPath(null);
                 fetchData(dbPath);
             } catch (e) {
-                alert('Update failed: ' + e.message);
+                showAlert('Update failed: ' + e.message, 'Update Error');
             }
         };
         
         const deleteValue = async (path) => {
             if (!firebaseDb) return;
-            if (!confirm(`Delete data at "${path}"?`)) return;
+            const confirmed = await showConfirm(`Delete data at "${path}"?`, 'Confirm Delete');
+            if (!confirmed) return;
             
             try {
                 await firebaseDb.ref(path).remove();
                 fetchData(dbPath);
             } catch (e) {
-                alert('Delete failed: ' + e.message);
+                showAlert('Delete failed: ' + e.message, 'Delete Error');
             }
         };
         
@@ -4516,7 +4544,7 @@
                                 />
                                 <button onClick={() => {
                                     try { localStorage.setItem('cc_firebase_uid', manualUid); } catch {}
-                                    alert('UID saved. You can now query public data paths.');
+                                    showAlert('UID saved. You can now query public data paths.', 'UID Saved');
                                 }} className="px-4 py-2 bg-indigo-600 rounded">
                                     Save
                                 </button>
@@ -4704,7 +4732,7 @@
     // SESSION LOG VIEW
     // =========================================================================
     
-    function SessionLogView({ apps, sessionLog, setSessionLog, deployments, github, onFileDrop }) {
+    function SessionLogView({ apps, sessionLog, setSessionLog, deployments, github, onFileDrop, showAlert }) {
         const [newEntry, setNewEntry] = React.useState('');
         const [firebaseUser, setFirebaseUser] = React.useState(null);
         const [syncStatus, setSyncStatus] = React.useState('local');
@@ -4754,7 +4782,7 @@
         // Accept pending deploy
         const acceptPendingDeploy = async (deploy) => {
             if (!github) {
-                alert('Configure GitHub token first');
+                showAlert('Configure GitHub token first', 'Configuration Required');
                 return;
             }
             
@@ -4810,7 +4838,7 @@
         // Upload gs-active.zip to Firebase
         const uploadProjectFile = async (file) => {
             if (!firebaseDb || !firebaseUser) {
-                alert('Please sign in via the Firebase tab first');
+                showAlert('Please sign in via the Firebase tab first', 'Sign-in Required');
                 return;
             }
             
@@ -4841,7 +4869,7 @@
                 reader.readAsDataURL(file);
             } catch (e) {
                 console.error('Upload error:', e);
-                alert('Upload failed: ' + e.message);
+                showAlert('Upload failed: ' + e.message, 'Upload Error');
                 setUploading(false);
             }
         };
@@ -4849,7 +4877,7 @@
         // Download gs-active.zip from Firebase
         const downloadProjectFile = async () => {
             if (!firebaseDb || !firebaseUser) {
-                alert('Please sign in via the Firebase tab first');
+                showAlert('Please sign in via the Firebase tab first', 'Sign-in Required');
                 return;
             }
             
@@ -4859,7 +4887,7 @@
                 const data = snapshot.val();
                 
                 if (!data || !data.data) {
-                    alert('No project file found. Upload one first!');
+                    showAlert('No project file found. Upload one first!', 'File Not Found');
                     setDownloading(false);
                     return;
                 }
@@ -4885,7 +4913,7 @@
                 setDownloading(false);
             } catch (e) {
                 console.error('Download error:', e);
-                alert('Download failed: ' + e.message);
+                showAlert('Download failed: ' + e.message, 'Download Error');
                 setDownloading(false);
             }
         };
@@ -4905,7 +4933,7 @@
             if (file && (file.name.endsWith('.zip') || file.name === 'gs-active.zip')) {
                 uploadProjectFile(file);
             } else if (file) {
-                alert('Please upload a .zip file (gs-active.zip)');
+                showAlert('Please upload a .zip file (gs-active.zip)', 'Invalid File');
             }
         };
         
@@ -5329,7 +5357,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
     // ISSUES VIEW - Full Issue Tracking & Release Management
     // =========================================================================
     
-    function IssuesView({ apps, deployments }) {
+    function IssuesView({ apps, deployments, showAlert, showConfirm, showPrompt }) {
         const [issues, setIssues] = React.useState([]);
         const [releases, setReleases] = React.useState([]);
         const [userReports, setUserReports] = React.useState([]);
@@ -5563,7 +5591,7 @@ Released: ${new Date().toLocaleDateString()}
             
             // Copy release notes
             navigator.clipboard.writeText(generateReleaseNotes(app));
-            alert('Release notes copied to clipboard!');
+            showAlert('Release notes copied to clipboard!', 'Copied');
         };
         
         // Convert user report to tracked issue
@@ -5618,7 +5646,8 @@ Released: ${new Date().toLocaleDateString()}
         // Delete user report permanently
         const deleteUserReport = async (report) => {
             if (!firebaseDb) return;
-            if (!confirm('Permanently delete this report?')) return;
+            const confirmed = await showConfirm('Permanently delete this report?', 'Confirm Delete');
+            if (!confirmed) return;
             
             await firebaseDb.ref(`reported-issues/${report.firebaseKey}`).remove();
         };
@@ -6005,8 +6034,8 @@ Released: ${new Date().toLocaleDateString()}
                                     )}
                                     {(issue.status === 'open' || issue.status === 'in-progress') && (
                                         <button
-                                            onClick={() => {
-                                                const version = prompt('Fixed in version:');
+                                            onClick={async () => {
+                                                const version = await showPrompt('Fixed in version:', '', 'Enter Version');
                                                 if (version) linkIssueToVersion(issue.id, version, issue.app);
                                             }}
                                             className="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-xs">
