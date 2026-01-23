@@ -27,7 +27,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="margin-bottom:20px;"><svg viewBox="0 0 100 100" width="64" height="64" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="gsLoadGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#667eea"/><stop offset="100%" style="stop-color:#764ba2"/></linearGradient></defs><rect x="5" y="5" width="90" height="90" rx="20" fill="url(#gsLoadGrad)"/><g transform="rotate(-12, 35, 50)"><rect x="15" y="28" width="28" height="36" rx="4" fill="white"/><circle cx="43" cy="46" r="6" fill="white"/><text x="29" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#667eea" text-anchor="middle">G</text></g><g transform="rotate(12, 65, 50)"><rect x="57" y="28" width="28" height="36" rx="4" fill="rgba(255,255,255,0.9)"/><circle cx="57" cy="46" r="6" fill="url(#gsLoadGrad)"/><text x="71" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#764ba2" text-anchor="middle">S</text></g></svg></div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v7.1.3 starting...');
+    console.log('Command Center v7.1.4 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -3833,6 +3833,28 @@
         
         const isMarked = (file) => markedForDeletion.some(m => m.repo === selectedRepo && m.path === file.path);
         
+        // Download file to user's Downloads folder
+        const downloadFile = async (file) => {
+            try {
+                // Fetch the raw file content
+                const response = await fetch(file.download_url);
+                const blob = await response.blob();
+                
+                // Create download link
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = file.name; // Forces download with filename
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                console.error('Download failed:', err);
+                alert('Download failed: ' + err.message);
+            }
+        };
+        
         const handleVersionAudit = async () => {
             if (!github || !selectedRepo) return;
             setVersionAudit({ loading: true });
@@ -3975,9 +3997,9 @@
                                         <a href={file.download_url} target="_blank" className="p-1 hover:bg-slate-600 rounded" title="View">
                                             <Icons.Eye />
                                         </a>
-                                        <a href={file.download_url} download className="p-1 hover:bg-slate-600 rounded" title="Download">
+                                        <button onClick={() => downloadFile(file)} className="p-1 hover:bg-slate-600 rounded" title="Download">
                                             <Icons.Download />
-                                        </a>
+                                        </button>
                                         <button onClick={() => toggleMarkForDeletion(file)} 
                                             className={`p-1 rounded ${isMarked(file) ? 'bg-red-600 text-white' : 'hover:bg-red-900/50 text-slate-400 hover:text-red-400'}`}
                                             title={isMarked(file) ? 'Unmark' : 'Mark for deletion'}>
