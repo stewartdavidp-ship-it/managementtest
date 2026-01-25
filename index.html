@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="7.1.8">
+    <meta name="version" content="7.1.9">
     <meta name="gs-app-id" content="management">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -27,7 +27,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="margin-bottom:20px;"><svg viewBox="0 0 100 100" width="64" height="64" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="gsLoadGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#667eea"/><stop offset="100%" style="stop-color:#764ba2"/></linearGradient></defs><rect x="5" y="5" width="90" height="90" rx="20" fill="url(#gsLoadGrad)"/><g transform="rotate(-12, 35, 50)"><rect x="15" y="28" width="28" height="36" rx="4" fill="white"/><circle cx="43" cy="46" r="6" fill="white"/><text x="29" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#667eea" text-anchor="middle">G</text></g><g transform="rotate(12, 65, 50)"><rect x="57" y="28" width="28" height="36" rx="4" fill="rgba(255,255,255,0.9)"/><circle cx="57" cy="46" r="6" fill="url(#gsLoadGrad)"/><text x="71" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#764ba2" text-anchor="middle">S</text></g></svg></div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v7.1.8 starting...');
+    console.log('Command Center v7.1.9 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -2514,7 +2514,7 @@
                             <Icons.GameShelfLogo size={32} />
                             <div>
                                 <h1 className="text-lg font-bold">Command Center</h1>
-                                <div className="text-xs text-slate-400">v7.1.8 • Deploy button stays spinner until complete</div>
+                                <div className="text-xs text-slate-400">v7.1.9 • Repo cleanup for stale files</div>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -3989,6 +3989,139 @@
             }
         };
         
+        // ============ REPO CLEANUP ============
+        // Identifies and removes files not part of the deployment package
+        const [cleanupModal, setCleanupModal] = React.useState(null);
+        const [cleanupDeleting, setCleanupDeleting] = React.useState(false);
+        
+        // Files that SHOULD be in a deployment
+        const DEPLOYMENT_FILES = [
+            'index.html',
+            'sw.js',
+            'manifest.json',
+            'manifest-test.json',   // Game Shelf test builds
+            'RELEASE_NOTES.txt',
+        ];
+        
+        // Folders that SHOULD be in a deployment
+        const DEPLOYMENT_FOLDERS = [
+            'icons',
+            'icons-test',           // Game Shelf test builds
+        ];
+        
+        // Patterns that are definitely stale/cleanup candidates
+        const STALE_PATTERNS = [
+            /^old\d*\.html$/i,           // old1.html, old2.html
+            /^old\d*\.index\.html$/i,    // old6.index.html
+            /^backup.*$/i,               // backup* files
+            /\.bak$/i,                   // .bak files
+            /^test.*\.html$/i,           // test*.html files (not in a test folder)
+            /^copy.*\.html$/i,           // copy*.html files
+            /^\._/,                      // macOS resource forks
+            /\.orig$/i,                  // .orig backup files
+        ];
+        
+        const isDeploymentFile = (path) => {
+            // Check if it's a known deployment file
+            if (DEPLOYMENT_FILES.includes(path)) return true;
+            
+            // Check if it's in a deployment folder
+            for (const folder of DEPLOYMENT_FOLDERS) {
+                if (path.startsWith(folder + '/')) return true;
+            }
+            
+            // Hidden files like .git are handled separately
+            if (path.startsWith('.')) return false;
+            
+            return false;
+        };
+        
+        const isDefinitelyStale = (filename) => {
+            return STALE_PATTERNS.some(pattern => pattern.test(filename));
+        };
+        
+        const scanForCleanup = async () => {
+            if (!selectedRepo || !github || !currentFiles.length) {
+                showAlert('Please select a repo and load its files first', 'No Files');
+                return;
+            }
+            
+            // Categorize files
+            const staleFiles = [];
+            const unknownFiles = [];
+            const deployFiles = [];
+            
+            for (const file of currentFiles) {
+                const path = file.path;
+                const filename = file.name;
+                
+                if (isDeploymentFile(path)) {
+                    deployFiles.push(file);
+                } else if (isDefinitelyStale(filename)) {
+                    staleFiles.push({ ...file, autoChecked: true });
+                } else if (!path.startsWith('.git')) {
+                    // Unknown file - not deployment, not obviously stale
+                    unknownFiles.push({ ...file, autoChecked: false });
+                }
+            }
+            
+            const candidates = [...staleFiles, ...unknownFiles];
+            
+            if (candidates.length === 0) {
+                showAlert('✓ Repository is clean! No stale files found.', 'All Clean');
+                return;
+            }
+            
+            setCleanupModal({
+                candidates,
+                selected: new Set(staleFiles.map(f => f.path)),
+                deployCount: deployFiles.length
+            });
+        };
+        
+        const toggleCleanupFile = (path) => {
+            setCleanupModal(prev => {
+                const newSelected = new Set(prev.selected);
+                if (newSelected.has(path)) {
+                    newSelected.delete(path);
+                } else {
+                    newSelected.add(path);
+                }
+                return { ...prev, selected: newSelected };
+            });
+        };
+        
+        const executeCleanup = async () => {
+            if (!cleanupModal?.selected?.size) return;
+            
+            setCleanupDeleting(true);
+            
+            const toDelete = cleanupModal.candidates.filter(f => cleanupModal.selected.has(f.path));
+            let deleted = 0;
+            let errors = [];
+            
+            for (const file of toDelete) {
+                try {
+                    await github.deleteFile(selectedRepo, file.path, file.sha, `Cleanup: Remove ${file.name}`);
+                    deleted++;
+                } catch (err) {
+                    errors.push(`${file.name}: ${err.message}`);
+                }
+            }
+            
+            setCleanupDeleting(false);
+            setCleanupModal(null);
+            
+            // Refresh file list
+            onLoadRepo(selectedRepo);
+            
+            if (errors.length > 0) {
+                showAlert(`Deleted ${deleted} files.\n\nErrors:\n${errors.join('\n')}`, 'Cleanup Partial');
+            } else {
+                showAlert(`✓ Successfully deleted ${deleted} files from ${selectedRepo}`, 'Cleanup Complete');
+            }
+        };
+        
         const handleVersionAudit = async () => {
             if (!github || !selectedRepo) return;
             setVersionAudit({ loading: true });
@@ -4060,6 +4193,10 @@
                                 ) : (
                                     <><Icons.Download /> Download Package</>
                                 )}
+                            </button>
+                            <button onClick={scanForCleanup}
+                                className="px-3 py-1.5 bg-rose-700 hover:bg-rose-600 rounded text-sm flex items-center gap-1">
+                                🧹 Cleanup
                             </button>
                         </div>
                     )}
@@ -4180,6 +4317,73 @@
                                     <Icons.File /> <span className="text-slate-500">{item.repo.split('/')[1]}/</span>{item.path}
                                 </div>
                             ))}
+                        </div>
+                    </div>
+                )}
+                
+                {/* Cleanup Modal */}
+                {cleanupModal && (
+                    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+                        <div className="bg-slate-800 rounded-xl border border-slate-600 max-w-lg w-full max-h-[80vh] flex flex-col">
+                            <div className="p-4 border-b border-slate-700 flex items-center justify-between">
+                                <h2 className="text-lg font-semibold flex items-center gap-2">
+                                    🧹 Cleanup {selectedRepo?.split('/')[1]}
+                                </h2>
+                                <button onClick={() => setCleanupModal(null)} className="text-slate-400 hover:text-white">
+                                    <Icons.X />
+                                </button>
+                            </div>
+                            
+                            <div className="p-4 overflow-y-auto flex-1">
+                                <p className="text-sm text-slate-400 mb-3">
+                                    Found {cleanupModal.candidates.length} files not in deployment package. 
+                                    <span className="text-green-400 ml-1">({cleanupModal.deployCount} deployment files OK)</span>
+                                </p>
+                                
+                                <div className="space-y-1">
+                                    {cleanupModal.candidates.map((file, i) => (
+                                        <label key={i} className={`flex items-center gap-3 p-2 rounded cursor-pointer hover:bg-slate-700/50 ${file.autoChecked ? 'bg-red-900/20' : ''}`}>
+                                            <input 
+                                                type="checkbox" 
+                                                checked={cleanupModal.selected.has(file.path)}
+                                                onChange={() => toggleCleanupFile(file.path)}
+                                                className="w-4 h-4 rounded"
+                                            />
+                                            <span className={`flex-1 text-sm ${file.autoChecked ? 'text-red-300' : 'text-slate-300'}`}>
+                                                {file.path}
+                                            </span>
+                                            <span className="text-xs text-slate-500">
+                                                {(file.size / 1024).toFixed(1)}KB
+                                            </span>
+                                            {file.autoChecked && (
+                                                <span className="text-xs bg-red-900 text-red-300 px-1.5 py-0.5 rounded">stale</span>
+                                            )}
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                            
+                            <div className="p-4 border-t border-slate-700 flex items-center justify-between">
+                                <div className="text-sm text-slate-400">
+                                    {cleanupModal.selected.size} of {cleanupModal.candidates.length} selected
+                                </div>
+                                <div className="flex gap-2">
+                                    <button onClick={() => setCleanupModal(null)} className="px-4 py-2 bg-slate-700 rounded">
+                                        Cancel
+                                    </button>
+                                    <button 
+                                        onClick={executeCleanup} 
+                                        disabled={cleanupModal.selected.size === 0 || cleanupDeleting}
+                                        className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:bg-red-900 disabled:cursor-not-allowed rounded flex items-center gap-2"
+                                    >
+                                        {cleanupDeleting ? (
+                                            <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Deleting...</>
+                                        ) : (
+                                            <><Icons.Trash /> Delete {cleanupModal.selected.size} Files</>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 )}
