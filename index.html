@@ -2964,13 +2964,18 @@
             }
         }, [stagedFiles.length]); // Only when file count changes (new file added)
         
-        // Reset deploying state when activeDeployment starts, track completion
+        // Keep deploying state while deployment is running, reset when complete
         React.useEffect(() => {
             if (activeDeployment) {
-                setIsDeploying(false);
-                // Mark as completed when deploy succeeds
-                if (activeDeployment.status === 'success') {
-                    setDeployCompleted(true);
+                if (activeDeployment.status === 'running') {
+                    // Keep spinner going while deployment is in progress
+                    setIsDeploying(true);
+                } else if (activeDeployment.status === 'success' || activeDeployment.status === 'error') {
+                    // Only stop spinner when deployment finishes
+                    setIsDeploying(false);
+                    if (activeDeployment.status === 'success') {
+                        setDeployCompleted(true);
+                    }
                 }
             }
         }, [activeDeployment, activeDeployment?.status]);
@@ -3281,7 +3286,7 @@
                                         disabled={!github || isDeploying}
                                         className={`w-full p-3 rounded font-medium flex items-center justify-center gap-2 transition-all ${
                                             isDeploying
-                                                ? 'bg-cyan-500 cursor-wait'
+                                                ? 'bg-emerald-700 cursor-wait'
                                                 : deployCompleted
                                                     ? 'bg-orange-500 hover:bg-orange-600'
                                                     : hasMismatch 
