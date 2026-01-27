@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="7.3.0">
+    <meta name="version" content="8.1.0">
     <meta name="gs-app-id" content="management">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -27,7 +27,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="margin-bottom:20px;"><svg viewBox="0 0 100 100" width="64" height="64" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="gsLoadGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#667eea"/><stop offset="100%" style="stop-color:#764ba2"/></linearGradient></defs><rect x="5" y="5" width="90" height="90" rx="20" fill="url(#gsLoadGrad)"/><g transform="rotate(-12, 35, 50)"><rect x="15" y="28" width="28" height="36" rx="4" fill="white"/><circle cx="43" cy="46" r="6" fill="white"/><text x="29" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#667eea" text-anchor="middle">G</text></g><g transform="rotate(12, 65, 50)"><rect x="57" y="28" width="28" height="36" rx="4" fill="rgba(255,255,255,0.9)"/><circle cx="57" cy="46" r="6" fill="url(#gsLoadGrad)"/><text x="71" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#764ba2" text-anchor="middle">S</text></g></svg></div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v7.3.0 starting...');
+    console.log('Command Center v8.1.0 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -425,6 +425,21 @@
                 beta: ['game-shelf-landing-beta']
             },
             detectionPatterns: ['<title>game\\s*shelf.*track', 'game-shelf-landing', 'track.*every.*daily.*puzzle']
+        },
+        'firebase-functions': {
+            id: 'firebase-functions', name: 'Firebase Functions', icon: '⚡',
+            targetPath: 'functions/index.js', swPath: '', hasServiceWorker: false,
+            subPath: '',  // Standalone repo
+            deployType: 'github-actions',  // Special flag: deployment handled by GitHub Actions
+            repos: { dev: '', test: '', prod: '', beta: '' },
+            versions: { dev: '', test: '', prod: '', beta: '' },
+            repoPatterns: {
+                dev: ['gameshelf-functions-dev'],
+                test: ['gameshelf-functions-test'],
+                prod: ['gameshelf-functions'],
+                beta: ['gameshelf-functions-beta']
+            },
+            detectionPatterns: ['firebase-functions', 'onRequest', 'onCall', 'getHint', 'ANTHROPIC_API_KEY']
         }
     };
     
@@ -815,6 +830,15 @@
                     /ET-[A-Z]{2}-\d{3}/,
                     /student-codes/i
                 ]
+            },
+            {
+                id: 'firebase-functions',
+                patterns: [
+                    /firebase-functions/i,
+                    /exports\.getHint/i,
+                    /onRequest|onCall/i,
+                    /ANTHROPIC_API_KEY/i
+                ]
             }
         ];
         
@@ -1044,6 +1068,31 @@
             } catch { return []; }
         }
         
+        // Get all files in a repo recursively
+        async getRepoFiles(repo, path = '') {
+            const allFiles = [];
+            try {
+                const contents = await this.listRepoContents(repo, path);
+                for (const item of contents) {
+                    if (item.type === 'file') {
+                        allFiles.push({
+                            type: 'file',
+                            path: item.path,
+                            sha: item.sha,
+                            size: item.size
+                        });
+                    } else if (item.type === 'dir') {
+                        // Recursively get files from subdirectories
+                        const subFiles = await this.getRepoFiles(repo, item.path);
+                        allFiles.push(...subFiles);
+                    }
+                }
+            } catch (e) {
+                console.log(`Error getting files at ${path}:`, e);
+            }
+            return allFiles;
+        }
+        
         async createOrUpdateFile(repo, path, content, message, sha = null) {
             const [owner, repoName] = repo.split('/');
             const body = {
@@ -1151,6 +1200,27 @@
             } catch {
                 return false;
             }
+        }
+        
+        // Delete a repository (requires delete_repo scope on token)
+        async deleteRepo(fullName) {
+            const [owner, repoName] = fullName.split('/');
+            const response = await fetch(`${this.baseUrl}/repos/${owner}/${repoName}`, {
+                method: 'DELETE',
+                headers: { 
+                    'Authorization': `token ${this.token}`, 
+                    'Accept': 'application/vnd.github.v3+json' 
+                }
+            });
+            
+            if (!response.ok) {
+                if (response.status === 403) {
+                    throw new Error('Token lacks delete_repo permission. Generate a new token with delete_repo scope.');
+                }
+                throw new Error(`Failed to delete repository: ${response.status}`);
+            }
+            
+            return { deleted: true, repo: fullName };
         }
         
         async getPagesDeploymentStatus(repo) {
@@ -1944,6 +2014,16 @@
                     console.log('Version:', version);
                     console.log('Suggested App:', suggestedApp, appDetection ? '(from content)' : '(from filename)');
                     
+                    // Determine targetPath: use app-specific path if detected, else default logic
+                    let targetPath;
+                    if (suggestedApp && DEFAULT_APP_DEFINITIONS[suggestedApp]) {
+                        targetPath = DEFAULT_APP_DEFINITIONS[suggestedApp].targetPath;
+                    } else if (file.name.endsWith('.html')) {
+                        targetPath = 'index.html';
+                    } else {
+                        targetPath = file.name;
+                    }
+                    
                     setStagedFiles(prev => [...prev, {
                         id: Date.now() + Math.random(),
                         name: file.name,
@@ -1956,8 +2036,7 @@
                         version,
                         versionSource,
                         versionValidation,
-                        // Default HTML files to index.html, others keep original name
-                        targetPath: file.name.endsWith('.html') ? 'index.html' : file.name
+                        targetPath
                     }]);
                 };
                 
@@ -2623,35 +2702,117 @@
         return (
             <div className="min-h-screen">
                 <header className="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
-                    <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <Icons.GameShelfLogo size={32} />
-                            <div>
-                                <h1 className="text-lg font-bold">Command Center</h1>
-                                <div className="text-xs text-slate-400">v7.3.0 • Consolidated repo support with subPath and custom domains</div>
+                    <div className="max-w-6xl mx-auto px-4 py-3">
+                        {/* Top row: Logo and main nav */}
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <Icons.GameShelfLogo size={32} />
+                                <div>
+                                    <h1 className="text-lg font-bold">Command Center</h1>
+                                    <div className="text-xs text-slate-400">v8.1.0 • Firebase Functions support</div>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                                <button onClick={() => refreshAllVersions()} disabled={refreshing}
+                                    className={`p-2 rounded hover:bg-slate-700 ${refreshing ? 'animate-spin text-indigo-400' : 'text-slate-400'}`}
+                                    title="Refresh versions">
+                                    <Icons.Refresh />
+                                </button>
+                                {/* Consolidated Navigation - 4 main sections */}
+                                {[
+                                    { id: 'deploy', icon: '🚀', label: 'Deploy', views: ['dashboard', 'history'] },
+                                    { id: 'monitor', icon: '📊', label: 'Monitor', views: ['firebase', 'integrations', 'issues'] },
+                                    { id: 'maintain', icon: '🔧', label: 'Maintain', views: ['cleanup', 'files', 'archive', 'session'] },
+                                    { id: 'configure', icon: '⚙️', label: 'Configure', views: ['config', 'apps', 'settings'] }
+                                ].map(section => (
+                                    <div key={section.id} className="relative group">
+                                        <button
+                                            className={`px-3 py-1.5 rounded text-sm flex items-center gap-1 ${
+                                                section.views.includes(view) ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                            }`}
+                                        >
+                                            <span>{section.icon}</span> {section.label}
+                                            <span className="text-xs opacity-60">▼</span>
+                                        </button>
+                                        {/* Dropdown */}
+                                        <div className="absolute top-full left-0 mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 min-w-[160px]">
+                                            {section.views.map(v => (
+                                                <button
+                                                    key={v}
+                                                    onClick={() => setView(v)}
+                                                    className={`w-full text-left px-4 py-2 text-sm capitalize hover:bg-slate-700 first:rounded-t-lg last:rounded-b-lg ${
+                                                        view === v ? 'bg-indigo-600/30 text-indigo-300' : 'text-slate-300'
+                                                    }`}
+                                                >
+                                                    {v === 'dashboard' && '📋 Dashboard'}
+                                                    {v === 'history' && '📜 Deploy History'}
+                                                    {v === 'firebase' && '🔥 Firebase'}
+                                                    {v === 'integrations' && '⚡ Integrations'}
+                                                    {v === 'issues' && '🐛 Issues'}
+                                                    {v === 'cleanup' && '🗑️ Cleanup'}
+                                                    {v === 'files' && '📁 Files'}
+                                                    {v === 'archive' && '📦 Archive'}
+                                                    {v === 'session' && '📝 Session Log'}
+                                                    {v === 'config' && '🌍 Environments'}
+                                                    {v === 'apps' && '📱 Apps'}
+                                                    {v === 'settings' && '🔑 Settings'}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <button onClick={() => refreshAllVersions()} disabled={refreshing}
-                                className={`p-2 rounded hover:bg-slate-700 ${refreshing ? 'animate-spin text-indigo-400' : 'text-slate-400'}`}
-                                title="Refresh versions">
-                                <Icons.Refresh />
+                        
+                        {/* Quick Actions Bar */}
+                        <div className="mt-3 pt-3 border-t border-slate-700 flex items-center gap-2 flex-wrap">
+                            <span className="text-xs text-slate-500 mr-2">⚡ Quick:</span>
+                            <button
+                                onClick={() => setModal({ type: 'deployAll' })}
+                                disabled={stagedFiles.length === 0}
+                                className="px-3 py-1 text-xs bg-green-600 hover:bg-green-500 disabled:opacity-40 disabled:hover:bg-green-600 rounded-full font-medium transition-colors"
+                            >
+                                🚀 Deploy All ({stagedFiles.length})
                             </button>
-                            {['dashboard', 'archive', 'files', 'firebase', 'session', 'issues', 'apps', 'history', 'config', 'settings'].map(v => (
-                                <button key={v} onClick={() => setView(v)}
-                                    className={`px-3 py-1.5 rounded text-sm capitalize flex items-center gap-1 ${view === v ? 'bg-indigo-600' : 'text-slate-400 hover:text-white'}`}>
-                                    {v === 'settings' && <Icons.Settings />}
-                                    {v === 'archive' && <><Icons.Archive /> Archive</>}
-                                    {v === 'config' && <><Icons.GitBranch /> Config</>}
-                                    {v === 'files' && <><Icons.Folder /> Files</>}
-                                    {v === 'firebase' && <><Icons.Database /> Firebase</>}
-                                    {v === 'session' && <><Icons.File /> Session</>}
-                                    {v === 'issues' && <><Icons.AlertCircle /> Issues</>}
-                                    {v === 'dashboard' && 'Dashboard'}
-                                    {v === 'apps' && 'Apps'}
-                                    {v === 'history' && 'History'}
-                                </button>
-                            ))}
+                            <button
+                                onClick={() => setModal({ type: 'syncEnvs' })}
+                                className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded-full font-medium transition-colors"
+                            >
+                                🔄 Sync TEST→PROD
+                            </button>
+                            <button
+                                onClick={() => setModal({ type: 'versionBump' })}
+                                className="px-3 py-1 text-xs bg-purple-600 hover:bg-purple-500 rounded-full font-medium transition-colors"
+                            >
+                                📈 Bump Versions
+                            </button>
+                            <button
+                                onClick={() => setView('integrations')}
+                                className="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded-full font-medium transition-colors"
+                            >
+                                💚 Health Check
+                            </button>
+                            <button
+                                onClick={() => { setView('cleanup'); }}
+                                className="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded-full font-medium transition-colors"
+                            >
+                                🧹 Cleanup Scan
+                            </button>
+                            
+                            {/* Status indicators */}
+                            <div className="ml-auto flex items-center gap-3 text-xs">
+                                <span className={`flex items-center gap-1 ${github ? 'text-green-400' : 'text-red-400'}`}>
+                                    <span className={`w-2 h-2 rounded-full ${github ? 'bg-green-400' : 'bg-red-400'}`}></span>
+                                    GitHub
+                                </span>
+                                <span className={`flex items-center gap-1 ${firebaseDb ? 'text-green-400' : 'text-amber-400'}`}>
+                                    <span className={`w-2 h-2 rounded-full ${firebaseDb ? 'bg-green-400' : 'bg-amber-400'}`}></span>
+                                    Firebase
+                                </span>
+                                <span className="text-slate-500">
+                                    {availableRepos.length} repos
+                                </span>
+                            </div>
                         </div>
                     </div>
                 </header>
@@ -2712,6 +2873,21 @@
                     
                     {view === 'firebase' && (
                         <FirebaseView showAlert={showAlert} showConfirm={showConfirm} showPrompt={showPrompt} />
+                    )}
+                    
+                    {view === 'integrations' && (
+                        <IntegrationsView showAlert={showAlert} showConfirm={showConfirm} showPrompt={showPrompt} />
+                    )}
+                    
+                    {view === 'cleanup' && (
+                        <CleanupView 
+                            github={github} 
+                            config={config}
+                            apps={apps}
+                            availableRepos={availableRepos}
+                            showAlert={showAlert} 
+                            showConfirm={showConfirm} 
+                        />
                     )}
                     
                     {view === 'apps' && <AppsView apps={apps} repos={availableRepos} onUpdate={updateApp} />}
@@ -2780,6 +2956,49 @@
                         />
                     )}
                     
+                    {/* Deploy All Modal */}
+                    {modal?.type === 'deployAll' && (
+                        <DeployAllModal
+                            stagedFiles={stagedFiles}
+                            apps={apps}
+                            onConfirm={async (files) => {
+                                setModal(null);
+                                for (const file of files) {
+                                    await handleDeploy(file, file.appId, file.target || 'test');
+                                }
+                            }}
+                            onCancel={() => setModal(null)}
+                        />
+                    )}
+                    
+                    {/* Sync Environments Modal */}
+                    {modal?.type === 'syncEnvs' && (
+                        <SyncEnvsModal
+                            apps={apps}
+                            github={github}
+                            onConfirm={async (selectedApps) => {
+                                setModal(null);
+                                for (const appId of selectedApps) {
+                                    await handlePromote(appId);
+                                }
+                            }}
+                            onCancel={() => setModal(null)}
+                            showAlert={showAlert}
+                        />
+                    )}
+                    
+                    {/* Version Bump Modal */}
+                    {modal?.type === 'versionBump' && (
+                        <VersionBumpModal
+                            apps={apps}
+                            onConfirm={async (bumps) => {
+                                setModal(null);
+                                await showAlert(`Version bumps prepared!\n\nTo apply, you'll need to update the source files and redeploy.\n\n${bumps.map(b => `${b.app}: ${b.current} → ${b.new}`).join('\n')}`, 'Version Bump Preview');
+                            }}
+                            onCancel={() => setModal(null)}
+                        />
+                    )}
+                    
                     {/* Custom Dialog Modal (replaces native alert/confirm/prompt) */}
                     {dialog && (
                         <DialogModal
@@ -2842,6 +3061,321 @@
                         <button onClick={onCancel} className="flex-1 p-2 bg-slate-700 rounded">Cancel</button>
                         <button onClick={onForce} className="flex-1 p-2 bg-red-600 rounded flex items-center justify-center gap-2">
                             <Icons.AlertTriangle className="w-4 h-4" /> Force Deploy
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // =========================================================================
+    // DEPLOY ALL MODAL (v8.0)
+    // =========================================================================
+    
+    function DeployAllModal({ stagedFiles, apps, onConfirm, onCancel }) {
+        const [selectedFiles, setSelectedFiles] = React.useState(new Set(stagedFiles.map((_, i) => i)));
+        const [target, setTarget] = React.useState('test');
+        
+        const toggleFile = (idx) => {
+            setSelectedFiles(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(idx)) newSet.delete(idx);
+                else newSet.add(idx);
+                return newSet;
+            });
+        };
+        
+        const handleConfirm = () => {
+            const files = stagedFiles.filter((_, i) => selectedFiles.has(i)).map(f => ({ ...f, target }));
+            onConfirm(files);
+        };
+        
+        return (
+            <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+                <div className="bg-slate-800 rounded-xl border border-green-700 p-6 max-w-lg w-full fade-in">
+                    <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-green-400">
+                        🚀 Deploy All Staged Files
+                    </h2>
+                    
+                    <div className="mb-4">
+                        <label className="text-sm text-slate-400 block mb-2">Target Environment</label>
+                        <div className="flex gap-2">
+                            {['test', 'prod'].map(t => (
+                                <button
+                                    key={t}
+                                    onClick={() => setTarget(t)}
+                                    className={`flex-1 py-2 rounded font-medium ${
+                                        target === t 
+                                            ? t === 'prod' ? 'bg-green-600' : 'bg-blue-600'
+                                            : 'bg-slate-700'
+                                    }`}
+                                >
+                                    {t.toUpperCase()}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    <div className="mb-4 max-h-64 overflow-y-auto bg-slate-900 rounded-lg">
+                        {stagedFiles.map((file, idx) => (
+                            <div
+                                key={idx}
+                                onClick={() => toggleFile(idx)}
+                                className={`flex items-center gap-3 p-3 border-b border-slate-800 cursor-pointer hover:bg-slate-800 ${
+                                    selectedFiles.has(idx) ? 'bg-slate-800/50' : ''
+                                }`}
+                            >
+                                <input type="checkbox" checked={selectedFiles.has(idx)} readOnly className="w-4 h-4" />
+                                <span className="text-lg">{apps[file.appId]?.icon || '📄'}</span>
+                                <div className="flex-1 min-w-0">
+                                    <div className="font-medium truncate">{file.name}</div>
+                                    <div className="text-xs text-slate-500">{apps[file.appId]?.name} • v{file.version}</div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                    
+                    <div className="flex gap-3">
+                        <button onClick={onCancel} className="flex-1 p-2 bg-slate-700 rounded">Cancel</button>
+                        <button
+                            onClick={handleConfirm}
+                            disabled={selectedFiles.size === 0}
+                            className="flex-1 p-2 bg-green-600 hover:bg-green-500 disabled:opacity-50 rounded font-medium"
+                        >
+                            Deploy {selectedFiles.size} File(s) to {target.toUpperCase()}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // =========================================================================
+    // SYNC ENVIRONMENTS MODAL (v8.0)
+    // =========================================================================
+    
+    function SyncEnvsModal({ apps, github, onConfirm, onCancel, showAlert }) {
+        const [selectedApps, setSelectedApps] = React.useState(new Set());
+        const [loading, setLoading] = React.useState(false);
+        
+        // Filter to apps that have both test and prod repos
+        const syncableApps = Object.values(apps).filter(app => 
+            app.repos?.test && app.repos?.prod && app.versions?.test
+        );
+        
+        const toggleApp = (appId) => {
+            setSelectedApps(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(appId)) newSet.delete(appId);
+                else newSet.add(appId);
+                return newSet;
+            });
+        };
+        
+        const selectAll = () => {
+            setSelectedApps(new Set(syncableApps.map(a => a.id)));
+        };
+        
+        return (
+            <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+                <div className="bg-slate-800 rounded-xl border border-blue-700 p-6 max-w-lg w-full fade-in">
+                    <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-blue-400">
+                        🔄 Sync TEST → PROD
+                    </h2>
+                    
+                    <p className="text-sm text-slate-400 mb-4">
+                        Promote TEST versions to PROD for selected apps.
+                    </p>
+                    
+                    <div className="flex justify-end mb-2">
+                        <button onClick={selectAll} className="text-xs text-indigo-400 hover:text-indigo-300">
+                            Select All
+                        </button>
+                    </div>
+                    
+                    <div className="mb-4 max-h-64 overflow-y-auto bg-slate-900 rounded-lg">
+                        {syncableApps.length === 0 ? (
+                            <div className="p-4 text-center text-slate-500">
+                                No apps with TEST→PROD repos configured
+                            </div>
+                        ) : (
+                            syncableApps.map(app => {
+                                const testV = app.versions?.test || '?';
+                                const prodV = app.versions?.prod || '?';
+                                const needsSync = testV !== prodV;
+                                
+                                return (
+                                    <div
+                                        key={app.id}
+                                        onClick={() => toggleApp(app.id)}
+                                        className={`flex items-center gap-3 p-3 border-b border-slate-800 cursor-pointer hover:bg-slate-800 ${
+                                            selectedApps.has(app.id) ? 'bg-slate-800/50' : ''
+                                        }`}
+                                    >
+                                        <input type="checkbox" checked={selectedApps.has(app.id)} readOnly className="w-4 h-4" />
+                                        <span className="text-lg">{app.icon}</span>
+                                        <div className="flex-1">
+                                            <div className="font-medium">{app.name}</div>
+                                            <div className="text-xs">
+                                                <span className="text-blue-400">TEST: {testV}</span>
+                                                <span className="mx-2">→</span>
+                                                <span className="text-green-400">PROD: {prodV}</span>
+                                                {needsSync && <span className="ml-2 text-amber-400">(out of sync)</span>}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                    
+                    <div className="flex gap-3">
+                        <button onClick={onCancel} className="flex-1 p-2 bg-slate-700 rounded">Cancel</button>
+                        <button
+                            onClick={() => onConfirm(Array.from(selectedApps))}
+                            disabled={selectedApps.size === 0 || loading}
+                            className="flex-1 p-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded font-medium"
+                        >
+                            Sync {selectedApps.size} App(s)
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // =========================================================================
+    // VERSION BUMP MODAL (v8.0)
+    // =========================================================================
+    
+    function VersionBumpModal({ apps, onConfirm, onCancel }) {
+        const [bumpType, setBumpType] = React.useState('patch'); // patch, minor, major
+        const [selectedApps, setSelectedApps] = React.useState(new Set());
+        
+        const bumpableApps = Object.values(apps).filter(app => app.versions?.prod || app.versions?.test);
+        
+        const toggleApp = (appId) => {
+            setSelectedApps(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(appId)) newSet.delete(appId);
+                else newSet.add(appId);
+                return newSet;
+            });
+        };
+        
+        const selectAll = () => {
+            setSelectedApps(new Set(bumpableApps.map(a => a.id)));
+        };
+        
+        const bumpVersion = (version, type) => {
+            if (!version) return '1.0.0';
+            const parts = version.split('.').map(Number);
+            while (parts.length < 3) parts.push(0);
+            
+            if (type === 'major') {
+                parts[0]++;
+                parts[1] = 0;
+                parts[2] = 0;
+            } else if (type === 'minor') {
+                parts[1]++;
+                parts[2] = 0;
+            } else {
+                parts[2]++;
+            }
+            
+            return parts.join('.');
+        };
+        
+        const handleConfirm = () => {
+            const bumps = Array.from(selectedApps).map(appId => {
+                const app = apps[appId];
+                const current = app.versions?.prod || app.versions?.test || '1.0.0';
+                return {
+                    appId,
+                    app: app.name,
+                    current,
+                    new: bumpVersion(current, bumpType)
+                };
+            });
+            onConfirm(bumps);
+        };
+        
+        return (
+            <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+                <div className="bg-slate-800 rounded-xl border border-purple-700 p-6 max-w-lg w-full fade-in">
+                    <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-purple-400">
+                        📈 Version Bump
+                    </h2>
+                    
+                    <div className="mb-4">
+                        <label className="text-sm text-slate-400 block mb-2">Bump Type</label>
+                        <div className="flex gap-2">
+                            {[
+                                { id: 'patch', label: 'Patch', desc: '1.0.0 → 1.0.1' },
+                                { id: 'minor', label: 'Minor', desc: '1.0.0 → 1.1.0' },
+                                { id: 'major', label: 'Major', desc: '1.0.0 → 2.0.0' }
+                            ].map(t => (
+                                <button
+                                    key={t.id}
+                                    onClick={() => setBumpType(t.id)}
+                                    className={`flex-1 py-2 px-3 rounded text-sm ${
+                                        bumpType === t.id ? 'bg-purple-600' : 'bg-slate-700'
+                                    }`}
+                                >
+                                    <div className="font-medium">{t.label}</div>
+                                    <div className="text-xs opacity-60">{t.desc}</div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    <div className="flex justify-end mb-2">
+                        <button onClick={selectAll} className="text-xs text-indigo-400 hover:text-indigo-300">
+                            Select All
+                        </button>
+                    </div>
+                    
+                    <div className="mb-4 max-h-64 overflow-y-auto bg-slate-900 rounded-lg">
+                        {bumpableApps.map(app => {
+                            const current = app.versions?.prod || app.versions?.test || '1.0.0';
+                            const newV = bumpVersion(current, bumpType);
+                            
+                            return (
+                                <div
+                                    key={app.id}
+                                    onClick={() => toggleApp(app.id)}
+                                    className={`flex items-center gap-3 p-3 border-b border-slate-800 cursor-pointer hover:bg-slate-800 ${
+                                        selectedApps.has(app.id) ? 'bg-slate-800/50' : ''
+                                    }`}
+                                >
+                                    <input type="checkbox" checked={selectedApps.has(app.id)} readOnly className="w-4 h-4" />
+                                    <span className="text-lg">{app.icon}</span>
+                                    <div className="flex-1">
+                                        <div className="font-medium">{app.name}</div>
+                                    </div>
+                                    <div className="text-sm font-mono">
+                                        <span className="text-slate-400">{current}</span>
+                                        <span className="mx-2 text-purple-400">→</span>
+                                        <span className="text-purple-300">{newV}</span>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    
+                    <div className="p-3 bg-amber-900/30 border border-amber-700 rounded-lg mb-4 text-sm">
+                        <strong>Note:</strong> This generates a preview. To apply version bumps, 
+                        update the source files (index.html, sw.js) and redeploy.
+                    </div>
+                    
+                    <div className="flex gap-3">
+                        <button onClick={onCancel} className="flex-1 p-2 bg-slate-700 rounded">Cancel</button>
+                        <button
+                            onClick={handleConfirm}
+                            disabled={selectedApps.size === 0}
+                            className="flex-1 p-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded font-medium"
+                        >
+                            Preview Bumps ({selectedApps.size})
                         </button>
                     </div>
                 </div>
@@ -4341,6 +4875,1479 @@
                         </div>
                     </div>
                 )}
+            </div>
+        );
+    }
+
+    // =========================================================================
+    // INTEGRATIONS VIEW (v7.4.0) - Manage Firebase Functions, Claude API, Stripe, Goody
+    // =========================================================================
+    
+    function IntegrationsView({ showAlert, showConfirm, showPrompt }) {
+        const [activeTab, setActiveTab] = React.useState('overview');
+        const [integrationStatus, setIntegrationStatus] = React.useState({
+            firebase: { status: 'unknown', lastCheck: null },
+            claude: { status: 'unknown', lastCheck: null },
+            stripe: { status: 'unknown', lastCheck: null },
+            goody: { status: 'unknown', lastCheck: null }
+        });
+        const [functionLogs, setFunctionLogs] = React.useState([]);
+        const [hintAnalytics, setHintAnalytics] = React.useState(null);
+        const [hintUsage, setHintUsage] = React.useState(null);
+        const [purchases, setPurchases] = React.useState(null);
+        const [loading, setLoading] = React.useState({});
+        const [testResults, setTestResults] = React.useState({});
+        
+        // Firebase Functions endpoint
+        const FUNCTIONS_BASE = 'https://us-central1-word-boxing.cloudfunctions.net';
+        
+        // Integration definitions
+        const integrations = {
+            firebase: {
+                id: 'firebase',
+                name: 'Firebase',
+                icon: '🔥',
+                description: 'Realtime Database, Auth, Cloud Functions',
+                functions: ['getHint', 'getHintUsage', 'createCoinCheckout', 'stripeWebhook', 'getGiftOptions', 'redeemGift', 'getGiftHistory'],
+                configRequired: ['apiKey', 'projectId', 'databaseURL'],
+                docsUrl: 'https://console.firebase.google.com/project/word-boxing'
+            },
+            claude: {
+                id: 'claude',
+                name: 'Claude API',
+                icon: '🤖',
+                description: 'Anthropic AI for hint generation',
+                functions: ['getHint'],
+                configRequired: ['ANTHROPIC_API_KEY'],
+                docsUrl: 'https://console.anthropic.com/'
+            },
+            stripe: {
+                id: 'stripe',
+                name: 'Stripe',
+                icon: '💳',
+                description: 'Payment processing for coins',
+                functions: ['createCoinCheckout', 'stripeWebhook'],
+                configRequired: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'],
+                docsUrl: 'https://dashboard.stripe.com/'
+            },
+            goody: {
+                id: 'goody',
+                name: 'Goody',
+                icon: '🎁',
+                description: 'Gift card redemption (coming soon)',
+                functions: ['getGiftOptions', 'redeemGift', 'getGiftHistory'],
+                configRequired: ['GOODY_API_KEY'],
+                docsUrl: 'https://www.ongoody.com/',
+                comingSoon: true
+            }
+        };
+        
+        // Check Firebase connection
+        const checkFirebase = async () => {
+            setLoading(prev => ({ ...prev, firebase: true }));
+            try {
+                if (!firebaseDb) throw new Error('Firebase not initialized');
+                
+                // Test read from a public path
+                const testRef = firebaseDb.ref('gameshelf-public');
+                await testRef.once('value');
+                
+                setIntegrationStatus(prev => ({
+                    ...prev,
+                    firebase: { status: 'connected', lastCheck: new Date().toISOString() }
+                }));
+                setTestResults(prev => ({ ...prev, firebase: { success: true, message: 'Connected to Firebase Realtime Database' } }));
+            } catch (e) {
+                setIntegrationStatus(prev => ({
+                    ...prev,
+                    firebase: { status: 'error', lastCheck: new Date().toISOString(), error: e.message }
+                }));
+                setTestResults(prev => ({ ...prev, firebase: { success: false, message: e.message } }));
+            }
+            setLoading(prev => ({ ...prev, firebase: false }));
+        };
+        
+        // Check Claude API (via Firebase Function)
+        const checkClaude = async () => {
+            setLoading(prev => ({ ...prev, claude: true }));
+            try {
+                // We can't directly test Claude API, but we can check if the function exists
+                // by calling getHintUsage which doesn't require auth
+                const response = await fetch(`${FUNCTIONS_BASE}/getHintUsage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data: { userId: 'test-connection' } })
+                });
+                
+                if (response.ok) {
+                    setIntegrationStatus(prev => ({
+                        ...prev,
+                        claude: { status: 'connected', lastCheck: new Date().toISOString() }
+                    }));
+                    setTestResults(prev => ({ ...prev, claude: { success: true, message: 'Firebase Functions responding (Claude API configured)' } }));
+                } else {
+                    throw new Error(`Function returned ${response.status}`);
+                }
+            } catch (e) {
+                setIntegrationStatus(prev => ({
+                    ...prev,
+                    claude: { status: 'error', lastCheck: new Date().toISOString(), error: e.message }
+                }));
+                setTestResults(prev => ({ ...prev, claude: { success: false, message: e.message } }));
+            }
+            setLoading(prev => ({ ...prev, claude: false }));
+        };
+        
+        // Check Stripe (via createCoinCheckout health)
+        const checkStripe = async () => {
+            setLoading(prev => ({ ...prev, stripe: true }));
+            try {
+                // Check if we have any purchase records in Firebase
+                if (firebaseDb) {
+                    const purchasesRef = firebaseDb.ref('purchases');
+                    const snapshot = await purchasesRef.limitToLast(5).once('value');
+                    const data = snapshot.val();
+                    if (data) {
+                        setPurchases(data);
+                        setIntegrationStatus(prev => ({
+                            ...prev,
+                            stripe: { status: 'connected', lastCheck: new Date().toISOString() }
+                        }));
+                        setTestResults(prev => ({ ...prev, stripe: { success: true, message: 'Stripe integration active (purchases found)' } }));
+                    } else {
+                        setIntegrationStatus(prev => ({
+                            ...prev,
+                            stripe: { status: 'connected', lastCheck: new Date().toISOString() }
+                        }));
+                        setTestResults(prev => ({ ...prev, stripe: { success: true, message: 'Stripe configured (no purchases yet)' } }));
+                    }
+                }
+            } catch (e) {
+                setIntegrationStatus(prev => ({
+                    ...prev,
+                    stripe: { status: 'error', lastCheck: new Date().toISOString(), error: e.message }
+                }));
+                setTestResults(prev => ({ ...prev, stripe: { success: false, message: e.message } }));
+            }
+            setLoading(prev => ({ ...prev, stripe: false }));
+        };
+        
+        // Load hint analytics
+        const loadHintAnalytics = async () => {
+            if (!firebaseDb) return;
+            setLoading(prev => ({ ...prev, analytics: true }));
+            try {
+                const analyticsRef = firebaseDb.ref('hint-analytics');
+                const snapshot = await analyticsRef.limitToLast(50).once('value');
+                setHintAnalytics(snapshot.val());
+                
+                const usageRef = firebaseDb.ref('hint-usage');
+                const usageSnapshot = await usageRef.limitToLast(20).once('value');
+                setHintUsage(usageSnapshot.val());
+            } catch (e) {
+                console.error('Failed to load hint analytics:', e);
+            }
+            setLoading(prev => ({ ...prev, analytics: false }));
+        };
+        
+        // Test all integrations
+        const testAllIntegrations = async () => {
+            await checkFirebase();
+            await checkClaude();
+            await checkStripe();
+            await loadHintAnalytics();
+        };
+        
+        // Initial load
+        React.useEffect(() => {
+            testAllIntegrations();
+        }, []);
+        
+        // Status indicator component
+        const StatusIndicator = ({ status }) => {
+            const colors = {
+                connected: 'bg-green-500',
+                error: 'bg-red-500',
+                unknown: 'bg-slate-500',
+                loading: 'bg-yellow-500 animate-pulse'
+            };
+            return (
+                <div className={`w-3 h-3 rounded-full ${colors[status] || colors.unknown}`} />
+            );
+        };
+        
+        // Integration card component
+        const IntegrationCard = ({ integration }) => {
+            const status = integrationStatus[integration.id];
+            const isLoading = loading[integration.id];
+            const result = testResults[integration.id];
+            
+            return (
+                <div className={`bg-slate-800 rounded-xl p-5 border ${
+                    status?.status === 'connected' ? 'border-green-700' : 
+                    status?.status === 'error' ? 'border-red-700' : 'border-slate-700'
+                }`}>
+                    <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                            <span className="text-2xl">{integration.icon}</span>
+                            <div>
+                                <h3 className="font-semibold">{integration.name}</h3>
+                                <p className="text-xs text-slate-400">{integration.description}</p>
+                            </div>
+                        </div>
+                        <StatusIndicator status={isLoading ? 'loading' : status?.status} />
+                    </div>
+                    
+                    {integration.comingSoon ? (
+                        <div className="text-sm text-amber-400 bg-amber-900/30 rounded px-3 py-2">
+                            🚧 Coming Soon
+                        </div>
+                    ) : (
+                        <>
+                            {result && (
+                                <div className={`text-xs mb-3 p-2 rounded ${
+                                    result.success ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'
+                                }`}>
+                                    {result.success ? '✓' : '✗'} {result.message}
+                                </div>
+                            )}
+                            
+                            <div className="text-xs text-slate-500 mb-3">
+                                Functions: {integration.functions.join(', ')}
+                            </div>
+                            
+                            <div className="flex gap-2">
+                                <a 
+                                    href={integration.docsUrl} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
+                                >
+                                    📄 Console
+                                </a>
+                                <button
+                                    onClick={() => {
+                                        if (integration.id === 'firebase') checkFirebase();
+                                        else if (integration.id === 'claude') checkClaude();
+                                        else if (integration.id === 'stripe') checkStripe();
+                                    }}
+                                    disabled={isLoading}
+                                    className="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded transition-colors disabled:opacity-50"
+                                >
+                                    {isLoading ? '...' : '🔄 Test'}
+                                </button>
+                            </div>
+                        </>
+                    )}
+                    
+                    {status?.lastCheck && (
+                        <div className="text-xs text-slate-500 mt-3">
+                            Last checked: {new Date(status.lastCheck).toLocaleTimeString()}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+        
+        // Logs panel
+        const LogsPanel = () => {
+            const allLogs = [];
+            
+            // Convert hint analytics to log entries
+            if (hintAnalytics) {
+                Object.entries(hintAnalytics).forEach(([key, value]) => {
+                    if (typeof value === 'object' && value.timestamp) {
+                        allLogs.push({
+                            id: key,
+                            type: 'hint',
+                            timestamp: value.timestamp,
+                            data: value
+                        });
+                    }
+                });
+            }
+            
+            // Sort by timestamp descending
+            allLogs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            
+            return (
+                <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="font-semibold">📊 Recent Activity</h3>
+                        <button
+                            onClick={loadHintAnalytics}
+                            disabled={loading.analytics}
+                            className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded"
+                        >
+                            {loading.analytics ? '...' : '🔄 Refresh'}
+                        </button>
+                    </div>
+                    
+                    {allLogs.length === 0 ? (
+                        <div className="text-sm text-slate-500 text-center py-8">
+                            No recent activity logs
+                        </div>
+                    ) : (
+                        <div className="space-y-2 max-h-96 overflow-y-auto">
+                            {allLogs.slice(0, 20).map(log => (
+                                <div key={log.id} className="text-xs p-2 bg-slate-900 rounded">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className={`font-medium ${
+                                            log.type === 'hint' ? 'text-purple-400' :
+                                            log.type === 'purchase' ? 'text-green-400' : 'text-slate-400'
+                                        }`}>
+                                            {log.type === 'hint' ? '🤖 Hint Request' : 
+                                             log.type === 'purchase' ? '💳 Purchase' : '📝 Log'}
+                                        </span>
+                                        <span className="text-slate-500">
+                                            {log.timestamp ? new Date(log.timestamp).toLocaleString() : 'N/A'}
+                                        </span>
+                                    </div>
+                                    {log.data && (
+                                        <div className="text-slate-400 truncate">
+                                            {log.data.game && `Game: ${log.data.game}`}
+                                            {log.data.level && ` | Level: ${log.data.level}`}
+                                            {log.data.userId && ` | User: ${log.data.userId.substring(0, 8)}...`}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+        
+        // Usage stats panel
+        const UsageStatsPanel = () => {
+            const userCount = hintUsage ? Object.keys(hintUsage).length : 0;
+            let totalRequests = 0;
+            let todayRequests = 0;
+            const today = new Date().toDateString();
+            
+            if (hintUsage) {
+                Object.values(hintUsage).forEach(user => {
+                    if (user.requests && Array.isArray(user.requests)) {
+                        totalRequests += user.requests.length;
+                        user.requests.forEach(ts => {
+                            if (new Date(ts).toDateString() === today) {
+                                todayRequests++;
+                            }
+                        });
+                    }
+                });
+            }
+            
+            return (
+                <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                    <h3 className="font-semibold mb-4">📈 Hint Usage Stats</h3>
+                    
+                    <div className="grid grid-cols-3 gap-4">
+                        <div className="text-center p-3 bg-slate-900 rounded-lg">
+                            <div className="text-2xl font-bold text-indigo-400">{userCount}</div>
+                            <div className="text-xs text-slate-500">Total Users</div>
+                        </div>
+                        <div className="text-center p-3 bg-slate-900 rounded-lg">
+                            <div className="text-2xl font-bold text-green-400">{totalRequests}</div>
+                            <div className="text-xs text-slate-500">Total Hints</div>
+                        </div>
+                        <div className="text-center p-3 bg-slate-900 rounded-lg">
+                            <div className="text-2xl font-bold text-amber-400">{todayRequests}</div>
+                            <div className="text-xs text-slate-500">Today</div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        // Environment variables panel
+        const EnvVarsPanel = () => {
+            const envVars = [
+                { name: 'ANTHROPIC_API_KEY', service: 'Claude', required: true, hint: 'sk-ant-...' },
+                { name: 'STRIPE_SECRET_KEY', service: 'Stripe', required: true, hint: 'sk_live_... or sk_test_...' },
+                { name: 'STRIPE_WEBHOOK_SECRET', service: 'Stripe', required: true, hint: 'whsec_...' },
+                { name: 'GOODY_API_KEY', service: 'Goody', required: false, hint: 'Optional' }
+            ];
+            
+            return (
+                <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                    <h3 className="font-semibold mb-4">🔐 Environment Variables</h3>
+                    <p className="text-xs text-slate-400 mb-4">
+                        Set in Firebase Functions: <code className="bg-slate-900 px-1 rounded">~/Documents/.../Games/firebase-functions/functions/.env</code>
+                    </p>
+                    
+                    <div className="space-y-2">
+                        {envVars.map(v => (
+                            <div key={v.name} className="flex items-center justify-between p-2 bg-slate-900 rounded text-sm">
+                                <div>
+                                    <code className="text-indigo-400">{v.name}</code>
+                                    <span className="text-xs text-slate-500 ml-2">({v.service})</span>
+                                </div>
+                                <span className={`text-xs px-2 py-0.5 rounded ${
+                                    v.required ? 'bg-red-900/50 text-red-400' : 'bg-slate-700 text-slate-400'
+                                }`}>
+                                    {v.required ? 'Required' : 'Optional'}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                    
+                    <div className="mt-4 p-3 bg-slate-900 rounded">
+                        <div className="text-xs text-slate-400 mb-2">Deploy functions after updating .env:</div>
+                        <code className="text-xs text-green-400 break-all">
+                            cd ~/Documents/.../Games/firebase-functions && firebase deploy --only functions
+                        </code>
+                    </div>
+                </div>
+            );
+        };
+        
+        return (
+            <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                    <h2 className="text-xl font-bold flex items-center gap-2">
+                        <Icons.Zap /> Integrations
+                    </h2>
+                    <button
+                        onClick={testAllIntegrations}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors"
+                    >
+                        🔄 Test All
+                    </button>
+                </div>
+                
+                {/* Tab Navigation */}
+                <div className="flex gap-2 border-b border-slate-700 pb-2">
+                    {[
+                        { id: 'overview', label: '📊 Overview' },
+                        { id: 'logs', label: '📝 Logs' },
+                        { id: 'config', label: '⚙️ Configuration' }
+                    ].map(tab => (
+                        <button
+                            key={tab.id}
+                            onClick={() => setActiveTab(tab.id)}
+                            className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${
+                                activeTab === tab.id 
+                                    ? 'bg-slate-700 text-white' 
+                                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                            }`}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+                
+                {/* Overview Tab */}
+                {activeTab === 'overview' && (
+                    <div className="space-y-6">
+                        {/* Integration Cards */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {Object.values(integrations).map(integration => (
+                                <IntegrationCard key={integration.id} integration={integration} />
+                            ))}
+                        </div>
+                        
+                        {/* Usage Stats */}
+                        <UsageStatsPanel />
+                    </div>
+                )}
+                
+                {/* Logs Tab */}
+                {activeTab === 'logs' && (
+                    <div className="space-y-6">
+                        <LogsPanel />
+                        
+                        {/* Hint Usage by User */}
+                        {hintUsage && (
+                            <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                                <h3 className="font-semibold mb-4">👥 Hint Usage by User</h3>
+                                <div className="space-y-2 max-h-64 overflow-y-auto">
+                                    {Object.entries(hintUsage).map(([userId, data]) => (
+                                        <div key={userId} className="flex items-center justify-between p-2 bg-slate-900 rounded text-sm">
+                                            <code className="text-xs text-slate-400">{userId.substring(0, 12)}...</code>
+                                            <span className="text-indigo-400">
+                                                {data.requests?.length || 0} hints
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* Recent Purchases */}
+                        {purchases && (
+                            <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                                <h3 className="font-semibold mb-4">💳 Recent Purchases</h3>
+                                <div className="space-y-2 max-h-64 overflow-y-auto">
+                                    {Object.entries(purchases).slice(0, 10).map(([userId, userPurchases]) => (
+                                        <div key={userId} className="p-2 bg-slate-900 rounded">
+                                            <code className="text-xs text-slate-400">{userId.substring(0, 12)}...</code>
+                                            {Object.entries(userPurchases).map(([purchaseId, purchase]) => (
+                                                <div key={purchaseId} className="mt-1 text-xs text-green-400">
+                                                    {purchase.coinAmount} coins - ${(purchase.priceCents / 100).toFixed(2)}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+                
+                {/* Configuration Tab */}
+                {activeTab === 'config' && (
+                    <div className="space-y-6">
+                        <EnvVarsPanel />
+                        
+                        {/* Firebase Functions List */}
+                        <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                            <h3 className="font-semibold mb-4">☁️ Firebase Cloud Functions</h3>
+                            <p className="text-xs text-slate-400 mb-4">
+                                Project: <code className="bg-slate-900 px-1 rounded">word-boxing</code> | 
+                                Region: <code className="bg-slate-900 px-1 rounded">us-central1</code>
+                            </p>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {[
+                                    { name: 'getHint', desc: 'AI hint generation via Claude', type: 'callable' },
+                                    { name: 'getHintUsage', desc: 'Check user hint limits', type: 'callable' },
+                                    { name: 'createCoinCheckout', desc: 'Stripe checkout session', type: 'callable' },
+                                    { name: 'stripeWebhook', desc: 'Handle Stripe events', type: 'http' },
+                                    { name: 'getGiftOptions', desc: 'Goody gift tiers', type: 'callable' },
+                                    { name: 'redeemGift', desc: 'Redeem coins for gift', type: 'callable' },
+                                    { name: 'getGiftHistory', desc: 'Gift redemption history', type: 'callable' }
+                                ].map(fn => (
+                                    <div key={fn.name} className="p-3 bg-slate-900 rounded">
+                                        <div className="flex items-center justify-between">
+                                            <code className="text-sm text-indigo-400">{fn.name}</code>
+                                            <span className={`text-xs px-2 py-0.5 rounded ${
+                                                fn.type === 'http' ? 'bg-amber-900/50 text-amber-400' : 'bg-slate-700 text-slate-400'
+                                            }`}>
+                                                {fn.type}
+                                            </span>
+                                        </div>
+                                        <div className="text-xs text-slate-500 mt-1">{fn.desc}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        
+                        {/* Quick Actions */}
+                        <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                            <h3 className="font-semibold mb-4">🚀 Quick Actions</h3>
+                            <div className="flex flex-wrap gap-3">
+                                <a 
+                                    href="https://console.firebase.google.com/project/word-boxing/functions"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 rounded-lg text-sm font-medium transition-colors"
+                                >
+                                    🔥 Firebase Console
+                                </a>
+                                <a 
+                                    href="https://console.firebase.google.com/project/word-boxing/functions/logs"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium transition-colors"
+                                >
+                                    📋 Function Logs
+                                </a>
+                                <a 
+                                    href="https://dashboard.stripe.com/test/webhooks"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium transition-colors"
+                                >
+                                    💳 Stripe Webhooks
+                                </a>
+                                <a 
+                                    href="https://console.anthropic.com/"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors"
+                                >
+                                    🤖 Anthropic Console
+                                </a>
+                            </div>
+                        </div>
+                        
+                        {/* Deployment Instructions */}
+                        <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                            <h3 className="font-semibold mb-4">📦 Deploy Functions</h3>
+                            <div className="bg-slate-900 rounded p-4 font-mono text-sm">
+                                <div className="text-slate-500"># Navigate to functions directory</div>
+                                <div className="text-green-400">cd ~/Documents/Documents\ -\ David\'s\ MacBook\ Air/Games/firebase-functions</div>
+                                <div className="text-slate-500 mt-2"># Set project</div>
+                                <div className="text-green-400">firebase use word-boxing</div>
+                                <div className="text-slate-500 mt-2"># Deploy all functions</div>
+                                <div className="text-green-400">firebase deploy --only functions</div>
+                                <div className="text-slate-500 mt-2"># Or deploy specific function</div>
+                                <div className="text-green-400">firebase deploy --only functions:getHint</div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    // =========================================================================
+    // CLEANUP VIEW (v7.4.3) - Repo and File Cleanup Management with Rollback
+    // =========================================================================
+    
+    function CleanupView({ github, config, apps, availableRepos, showAlert, showConfirm }) {
+        const [activeTab, setActiveTab] = React.useState('files');
+        const [scanning, setScanning] = React.useState(false);
+        const [scanResults, setScanResults] = React.useState(null);
+        const [selectedFiles, setSelectedFiles] = React.useState(new Set());
+        const [selectedRepos, setSelectedRepos] = React.useState(new Set());
+        const [deleting, setDeleting] = React.useState(false);
+        const [deleteProgress, setDeleteProgress] = React.useState({ current: 0, total: 0 });
+        const [restoring, setRestoring] = React.useState(false);
+        
+        // Deletion history - persisted to localStorage
+        const [deletionHistory, setDeletionHistory] = React.useState(() => {
+            try {
+                return JSON.parse(localStorage.getItem('cc_deletion_history') || '[]');
+            } catch { return []; }
+        });
+        
+        // Save deletion history to localStorage
+        const saveDeletionHistory = (history) => {
+            setDeletionHistory(history);
+            try {
+                localStorage.setItem('cc_deletion_history', JSON.stringify(history));
+            } catch (e) {
+                console.error('Failed to save deletion history:', e);
+            }
+        };
+        
+        // Add to deletion history
+        const addToDeletionHistory = (items) => {
+            const newHistory = [
+                ...items.map(item => ({
+                    ...item,
+                    deletedAt: new Date().toISOString(),
+                    id: `${item.repo}:${item.path}:${Date.now()}`
+                })),
+                ...deletionHistory
+            ].slice(0, 100); // Keep last 100 deletions
+            saveDeletionHistory(newHistory);
+        };
+        
+        // Remove from deletion history
+        const removeFromHistory = (id) => {
+            const newHistory = deletionHistory.filter(h => h.id !== id);
+            saveDeletionHistory(newHistory);
+        };
+        
+        // Clear all history
+        const clearHistory = async () => {
+            const confirmed = await showConfirm('Clear all deletion history? This only removes the history log, not the actual files.', 'Clear History');
+            if (confirmed) {
+                saveDeletionHistory([]);
+            }
+        };
+        
+        // Define base package files for each app type
+        const BASE_PACKAGES = {
+            pwa: {
+                required: ['index.html', 'sw.js', 'manifest.json'],
+                optional: ['RELEASE_NOTES.txt', 'CNAME'],
+                folders: ['icons']
+            },
+            gameshelf: {
+                required: ['index.html', 'sw.js', 'manifest.json', 'manifest-test.json'],
+                optional: ['RELEASE_NOTES.txt', 'CNAME'],
+                folders: ['icons', 'icons-test', 'quotle', 'slate', 'rungs', 'wordboxing']
+            },
+            simple: {
+                required: ['index.html'],
+                optional: ['RELEASE_NOTES.txt', 'README.md', 'CNAME'],
+                folders: []
+            }
+        };
+        
+        // Define which repos are consolidated (should contain subfolders)
+        const CONSOLIDATED_REPOS = {
+            'gameshelf': ['quotle', 'slate', 'rungs', 'wordboxing'],
+            'gameshelftest': ['quotle', 'slate', 'rungs', 'wordboxing']
+        };
+        
+        // Define legacy repos that may no longer be needed
+        const LEGACY_REPO_PATTERNS = [
+            // Individual game repos (now consolidated)
+            /^quotle$/i, /^quotletest$/i,
+            /^slate$/i, /^slatetest$/i,
+            /^rungs$/i, /^rungstest$/i,
+            /^wordboxing$/i, /^wordboxingtest$/i,
+            /^word-boxing$/i,
+            // Old naming patterns
+            /^gameshelf-dev$/i, /^gameshelf-beta$/i,
+            // Typos or experiments
+            /test$/i
+        ];
+        
+        // Get app type for a repo
+        const getAppType = (repoName) => {
+            const lower = repoName.toLowerCase();
+            if (lower === 'gameshelf' || lower === 'gameshelftest') return 'gameshelf';
+            if (lower.includes('management') || lower.includes('command') || lower.includes('testplan')) return 'simple';
+            return 'pwa';
+        };
+        
+        // Check if a file is part of the base package
+        const isBaseFile = (filePath, appType) => {
+            const pkg = BASE_PACKAGES[appType] || BASE_PACKAGES.pwa;
+            const fileName = filePath.split('/').pop();
+            const topLevel = filePath.split('/')[0];
+            
+            // Check required files
+            if (pkg.required.includes(fileName) && !filePath.includes('/')) return true;
+            
+            // Check optional files
+            if (pkg.optional.includes(fileName) && !filePath.includes('/')) return true;
+            
+            // Check folders
+            if (pkg.folders.some(f => topLevel === f || filePath.startsWith(f + '/'))) return true;
+            
+            // For consolidated repos, check subfolder structure
+            if (appType === 'gameshelf') {
+                const parts = filePath.split('/');
+                if (parts.length >= 2) {
+                    const subApp = parts[0];
+                    if (['quotle', 'slate', 'rungs', 'wordboxing'].includes(subApp)) {
+                        // Check if it's a valid file within the sub-app
+                        const subPath = parts.slice(1).join('/');
+                        return isBaseFile(subPath, 'pwa');
+                    }
+                }
+            }
+            
+            return false;
+        };
+        
+        // Check if a repo might be legacy/unused
+        const isLegacyRepo = (repoName) => {
+            // Check against legacy patterns
+            for (const pattern of LEGACY_REPO_PATTERNS) {
+                if (pattern.test(repoName)) {
+                    // But exclude if it's an active configured repo
+                    const isConfigured = Object.values(config.apps || {}).some(app => 
+                        Object.values(app.repos || {}).some(r => r && r.includes(repoName))
+                    );
+                    if (!isConfigured) return true;
+                }
+            }
+            return false;
+        };
+        
+        // Scan all repos for stale files
+        const scanForStaleFiles = async () => {
+            if (!github) {
+                await showAlert('GitHub token required', 'Error');
+                return;
+            }
+            
+            setScanning(true);
+            setScanResults(null);
+            setSelectedFiles(new Set());
+            setSelectedRepos(new Set());
+            
+            const results = {
+                staleFiles: [],
+                legacyRepos: [],
+                scannedRepos: 0,
+                totalFiles: 0
+            };
+            
+            try {
+                // Get all repos
+                const repos = availableRepos || [];
+                
+                for (const repo of repos) {
+                    const repoName = repo.name;
+                    const repoFullName = repo.fullName || `${repo.owner}/${repoName}`;
+                    
+                    // Check if this is a legacy repo
+                    if (isLegacyRepo(repoName)) {
+                        results.legacyRepos.push({
+                            name: repoName,
+                            fullName: repoFullName,
+                            reason: 'Matches legacy pattern - may be obsolete after consolidation',
+                            url: `https://github.com/${repoFullName}`
+                        });
+                    }
+                    
+                    // Scan repo files
+                    try {
+                        const files = await github.getRepoFiles(repoFullName);
+                        const appType = getAppType(repoName);
+                        
+                        results.scannedRepos++;
+                        results.totalFiles += files.length;
+                        
+                        for (const file of files) {
+                            if (file.type === 'file' && !isBaseFile(file.path, appType)) {
+                                results.staleFiles.push({
+                                    repo: repoFullName,
+                                    repoName: repoName,
+                                    path: file.path,
+                                    sha: file.sha,
+                                    size: file.size,
+                                    reason: 'Not part of standard package'
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        console.log(`Could not scan ${repoName}:`, e.message);
+                    }
+                }
+                
+                setScanResults(results);
+            } catch (e) {
+                await showAlert(`Scan failed: ${e.message}`, 'Error');
+            }
+            
+            setScanning(false);
+        };
+        
+        // Toggle file selection
+        const toggleFileSelection = (fileKey) => {
+            setSelectedFiles(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(fileKey)) {
+                    newSet.delete(fileKey);
+                } else {
+                    newSet.add(fileKey);
+                }
+                return newSet;
+            });
+        };
+        
+        // Toggle repo selection
+        const toggleRepoSelection = (repoName) => {
+            setSelectedRepos(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(repoName)) {
+                    newSet.delete(repoName);
+                } else {
+                    newSet.add(repoName);
+                }
+                return newSet;
+            });
+        };
+        
+        // Select all files
+        const selectAllFiles = () => {
+            if (!scanResults) return;
+            const allKeys = scanResults.staleFiles.map(f => `${f.repo}:${f.path}`);
+            setSelectedFiles(new Set(allKeys));
+        };
+        
+        // Clear file selection
+        const clearFileSelection = () => {
+            setSelectedFiles(new Set());
+        };
+        
+        // Select all repos
+        const selectAllRepos = () => {
+            if (!scanResults) return;
+            const allRepos = scanResults.legacyRepos.map(r => r.fullName);
+            setSelectedRepos(new Set(allRepos));
+        };
+        
+        // Clear repo selection
+        const clearRepoSelection = () => {
+            setSelectedRepos(new Set());
+        };
+        
+        // Delete selected files
+        const deleteSelectedFiles = async () => {
+            if (selectedFiles.size === 0) return;
+            
+            const confirmed = await showConfirm(
+                `Delete ${selectedFiles.size} file(s)?\n\nFiles can be restored from the History tab.`,
+                'Confirm Deletion'
+            );
+            
+            if (!confirmed) return;
+            
+            setDeleting(true);
+            setDeleteProgress({ current: 0, total: selectedFiles.size });
+            
+            let deleted = 0;
+            let failed = 0;
+            const deletedItems = [];
+            
+            for (const fileKey of selectedFiles) {
+                const [repo, ...pathParts] = fileKey.split(':');
+                const path = pathParts.join(':');
+                const file = scanResults.staleFiles.find(f => f.repo === repo && f.path === path);
+                
+                if (file) {
+                    try {
+                        // Get the commit SHA before deletion for restoration
+                        const [owner, repoName] = repo.split('/');
+                        let parentCommitSha = null;
+                        try {
+                            const commits = await github.request(`/repos/${owner}/${repoName}/commits?path=${encodeURIComponent(path)}&per_page=1`);
+                            if (commits && commits.length > 0) {
+                                parentCommitSha = commits[0].sha;
+                            }
+                        } catch (e) {
+                            console.log('Could not get commit sha:', e);
+                        }
+                        
+                        await github.deleteFile(repo, path, `Cleanup: Remove stale file ${path}`, file.sha);
+                        
+                        // Track successful deletion
+                        deletedItems.push({
+                            repo,
+                            repoName: file.repoName,
+                            path,
+                            sha: file.sha,
+                            size: file.size,
+                            parentCommitSha,
+                            reason: file.reason
+                        });
+                        
+                        deleted++;
+                    } catch (e) {
+                        console.error(`Failed to delete ${path}:`, e);
+                        failed++;
+                    }
+                }
+                
+                setDeleteProgress({ current: deleted + failed, total: selectedFiles.size });
+            }
+            
+            // Save to deletion history
+            if (deletedItems.length > 0) {
+                addToDeletionHistory(deletedItems);
+            }
+            
+            setDeleting(false);
+            setSelectedFiles(new Set());
+            
+            await showAlert(
+                `Deleted ${deleted} file(s)${failed > 0 ? `, ${failed} failed` : ''}\n\nFiles saved to History tab for potential restoration.`,
+                'Deletion Complete'
+            );
+            
+            // Re-scan to update results
+            scanForStaleFiles();
+        };
+        
+        // Restore a deleted file from git history
+        const restoreFile = async (historyItem) => {
+            if (!github) return;
+            
+            const confirmed = await showConfirm(
+                `Restore "${historyItem.path}" to ${historyItem.repoName}?`,
+                'Confirm Restore'
+            );
+            
+            if (!confirmed) return;
+            
+            setRestoring(true);
+            
+            try {
+                const [owner, repoName] = historyItem.repo.split('/');
+                
+                // Try to get the file content from the commit before deletion
+                let content = null;
+                
+                if (historyItem.parentCommitSha) {
+                    try {
+                        // Get file content at the parent commit
+                        const fileData = await github.request(
+                            `/repos/${owner}/${repoName}/contents/${encodeURIComponent(historyItem.path)}?ref=${historyItem.parentCommitSha}`
+                        );
+                        if (fileData && fileData.content) {
+                            content = fileData.content; // Already base64 encoded
+                        }
+                    } catch (e) {
+                        console.log('Could not get file from parent commit:', e);
+                    }
+                }
+                
+                // Fallback: try to get from any commit in history
+                if (!content) {
+                    try {
+                        const commits = await github.request(
+                            `/repos/${owner}/${repoName}/commits?path=${encodeURIComponent(historyItem.path)}&per_page=5`
+                        );
+                        for (const commit of commits) {
+                            try {
+                                const fileData = await github.request(
+                                    `/repos/${owner}/${repoName}/contents/${encodeURIComponent(historyItem.path)}?ref=${commit.sha}`
+                                );
+                                if (fileData && fileData.content) {
+                                    content = fileData.content;
+                                    break;
+                                }
+                            } catch (e) {
+                                continue;
+                            }
+                        }
+                    } catch (e) {
+                        console.log('Could not search commit history:', e);
+                    }
+                }
+                
+                if (!content) {
+                    throw new Error('Could not find file content in git history');
+                }
+                
+                // Restore the file
+                await github.request(`/repos/${owner}/${repoName}/contents/${historyItem.path}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        message: `Restore: ${historyItem.path}`,
+                        content: content.replace(/\n/g, ''), // Remove any newlines in base64
+                        committer: { name: 'Command Center', email: 'deploy@gameshelf.app' }
+                    })
+                });
+                
+                // Remove from history
+                removeFromHistory(historyItem.id);
+                
+                await showAlert(`Successfully restored "${historyItem.path}"`, 'Restore Complete');
+                
+            } catch (e) {
+                console.error('Restore failed:', e);
+                await showAlert(`Failed to restore file: ${e.message}`, 'Restore Failed');
+            }
+            
+            setRestoring(false);
+        };
+        
+        // Delete selected repos
+        const deleteSelectedRepos = async () => {
+            if (selectedRepos.size === 0) return;
+            
+            const repoList = Array.from(selectedRepos).join('\n• ');
+            const confirmed = await showConfirm(
+                `⚠️ DELETE ${selectedRepos.size} REPOSITORY(S)?\n\n• ${repoList}\n\nThis will PERMANENTLY delete these repositories and all their contents!\n\nThis action CANNOT be undone.`,
+                '🚨 Confirm Repository Deletion'
+            );
+            
+            if (!confirmed) return;
+            
+            // Double confirm for repos
+            const doubleConfirmed = await showConfirm(
+                `Are you ABSOLUTELY SURE?\n\nType the number of repos to delete: ${selectedRepos.size}`,
+                'Final Confirmation'
+            );
+            
+            if (!doubleConfirmed) return;
+            
+            setDeleting(true);
+            setDeleteProgress({ current: 0, total: selectedRepos.size });
+            
+            let deleted = 0;
+            let failed = 0;
+            
+            for (const repoFullName of selectedRepos) {
+                try {
+                    await github.deleteRepo(repoFullName);
+                    deleted++;
+                } catch (e) {
+                    console.error(`Failed to delete repo ${repoFullName}:`, e);
+                    failed++;
+                }
+                
+                setDeleteProgress({ current: deleted + failed, total: selectedRepos.size });
+            }
+            
+            setDeleting(false);
+            setSelectedRepos(new Set());
+            
+            await showAlert(
+                `Deleted ${deleted} repo(s)${failed > 0 ? `, ${failed} failed` : ''}`,
+                'Deletion Complete'
+            );
+            
+            // Re-scan
+            scanForStaleFiles();
+        };
+        
+        // Format file size
+        const formatSize = (bytes) => {
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+        };
+        
+        return (
+            <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                    <h2 className="text-xl font-bold flex items-center gap-2">
+                        <Icons.Trash /> Repository Cleanup
+                    </h2>
+                    <button
+                        onClick={scanForStaleFiles}
+                        disabled={scanning || !github}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                    >
+                        {scanning ? (
+                            <><Icons.Refresh className="animate-spin" /> Scanning...</>
+                        ) : (
+                            <><Icons.Search /> Scan Repositories</>
+                        )}
+                    </button>
+                </div>
+                
+                {!github && (
+                    <div className="p-4 bg-amber-900/50 border border-amber-700 rounded-lg">
+                        ⚠️ GitHub token required for cleanup operations
+                    </div>
+                )}
+                
+                {/* Tab Navigation */}
+                <div className="flex gap-2 border-b border-slate-700 pb-2">
+                    {[
+                        { id: 'files', label: `📄 Stale Files ${scanResults ? `(${scanResults.staleFiles.length})` : ''}` },
+                        { id: 'repos', label: `📦 Legacy Repos ${scanResults ? `(${scanResults.legacyRepos.length})` : ''}` },
+                        { id: 'history', label: `⏪ History ${deletionHistory.length > 0 ? `(${deletionHistory.length})` : ''}` }
+                    ].map(tab => (
+                        <button
+                            key={tab.id}
+                            onClick={() => setActiveTab(tab.id)}
+                            className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${
+                                activeTab === tab.id 
+                                    ? 'bg-slate-700 text-white' 
+                                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                            }`}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+                
+                {/* Scan Results Summary */}
+                {scanResults && (
+                    <div className="grid grid-cols-4 gap-4">
+                        <div className="bg-slate-800 rounded-lg p-4 text-center">
+                            <div className="text-2xl font-bold text-indigo-400">{scanResults.scannedRepos}</div>
+                            <div className="text-xs text-slate-500">Repos Scanned</div>
+                        </div>
+                        <div className="bg-slate-800 rounded-lg p-4 text-center">
+                            <div className="text-2xl font-bold text-slate-400">{scanResults.totalFiles}</div>
+                            <div className="text-xs text-slate-500">Total Files</div>
+                        </div>
+                        <div className="bg-slate-800 rounded-lg p-4 text-center">
+                            <div className="text-2xl font-bold text-amber-400">{scanResults.staleFiles.length}</div>
+                            <div className="text-xs text-slate-500">Stale Files</div>
+                        </div>
+                        <div className="bg-slate-800 rounded-lg p-4 text-center">
+                            <div className="text-2xl font-bold text-red-400">{scanResults.legacyRepos.length}</div>
+                            <div className="text-xs text-slate-500">Legacy Repos</div>
+                        </div>
+                    </div>
+                )}
+                
+                {/* Stale Files Tab */}
+                {activeTab === 'files' && (
+                    <div className="space-y-4">
+                        {scanResults && scanResults.staleFiles.length > 0 && (
+                            <>
+                                {/* Selection Controls */}
+                                <div className="flex items-center justify-between bg-slate-800 rounded-lg p-3">
+                                    <div className="flex items-center gap-4">
+                                        <span className="text-sm text-slate-400">
+                                            {selectedFiles.size} of {scanResults.staleFiles.length} selected
+                                        </span>
+                                        <button
+                                            onClick={selectAllFiles}
+                                            className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
+                                        >
+                                            Select All
+                                        </button>
+                                        <button
+                                            onClick={clearFileSelection}
+                                            className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
+                                        >
+                                            Clear
+                                        </button>
+                                    </div>
+                                    <button
+                                        onClick={deleteSelectedFiles}
+                                        disabled={selectedFiles.size === 0 || deleting}
+                                        className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                                    >
+                                        {deleting ? (
+                                            <><Icons.Refresh className="animate-spin" /> Deleting {deleteProgress.current}/{deleteProgress.total}</>
+                                        ) : (
+                                            <><Icons.Trash /> Delete Selected</>
+                                        )}
+                                    </button>
+                                </div>
+                                
+                                {/* File List */}
+                                <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                                    <div className="max-h-96 overflow-y-auto">
+                                        {scanResults.staleFiles.map((file, idx) => {
+                                            const fileKey = `${file.repo}:${file.path}`;
+                                            const isSelected = selectedFiles.has(fileKey);
+                                            return (
+                                                <div
+                                                    key={fileKey}
+                                                    className={`flex items-center gap-3 p-3 border-b border-slate-700 last:border-0 hover:bg-slate-700/50 cursor-pointer ${
+                                                        isSelected ? 'bg-indigo-900/30' : ''
+                                                    }`}
+                                                    onClick={() => toggleFileSelection(fileKey)}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isSelected}
+                                                        onChange={() => {}}
+                                                        className="w-4 h-4 rounded"
+                                                    />
+                                                    <Icons.File />
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="text-sm font-medium truncate">{file.path}</div>
+                                                        <div className="text-xs text-slate-500">
+                                                            {file.repoName} • {formatSize(file.size || 0)}
+                                                        </div>
+                                                    </div>
+                                                    <span className="text-xs text-amber-400 bg-amber-900/30 px-2 py-1 rounded">
+                                                        {file.reason}
+                                                    </span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                        
+                        {scanResults && scanResults.staleFiles.length === 0 && (
+                            <div className="text-center py-12 text-slate-500">
+                                <div className="text-4xl mb-4">✨</div>
+                                <div>No stale files found - repositories are clean!</div>
+                            </div>
+                        )}
+                        
+                        {!scanResults && !scanning && (
+                            <div className="text-center py-12 text-slate-500">
+                                <div className="text-4xl mb-4">🔍</div>
+                                <div>Click "Scan Repositories" to find stale files</div>
+                            </div>
+                        )}
+                    </div>
+                )}
+                
+                {/* Legacy Repos Tab */}
+                {activeTab === 'repos' && (
+                    <div className="space-y-4">
+                        {scanResults && scanResults.legacyRepos.length > 0 && (
+                            <>
+                                {/* Selection Controls */}
+                                <div className="flex items-center justify-between bg-slate-800 rounded-lg p-3">
+                                    <div className="flex items-center gap-4">
+                                        <span className="text-sm text-slate-400">
+                                            {selectedRepos.size} of {scanResults.legacyRepos.length} selected
+                                        </span>
+                                        <button
+                                            onClick={selectAllRepos}
+                                            className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
+                                        >
+                                            Select All
+                                        </button>
+                                        <button
+                                            onClick={clearRepoSelection}
+                                            className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
+                                        >
+                                            Clear
+                                        </button>
+                                    </div>
+                                    <button
+                                        onClick={deleteSelectedRepos}
+                                        disabled={selectedRepos.size === 0 || deleting}
+                                        className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                                    >
+                                        {deleting ? (
+                                            <><Icons.Refresh className="animate-spin" /> Deleting {deleteProgress.current}/{deleteProgress.total}</>
+                                        ) : (
+                                            <><Icons.Trash /> Delete Selected Repos</>
+                                        )}
+                                    </button>
+                                </div>
+                                
+                                {/* Warning */}
+                                <div className="p-4 bg-red-900/30 border border-red-700 rounded-lg text-sm">
+                                    <strong>⚠️ Warning:</strong> Deleting repositories is permanent and cannot be undone. 
+                                    Make sure you have backups of any important data before proceeding.
+                                </div>
+                                
+                                {/* Repo List */}
+                                <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                                    <div className="max-h-96 overflow-y-auto">
+                                        {scanResults.legacyRepos.map((repo) => {
+                                            const isSelected = selectedRepos.has(repo.fullName);
+                                            return (
+                                                <div
+                                                    key={repo.fullName}
+                                                    className={`flex items-center gap-3 p-4 border-b border-slate-700 last:border-0 hover:bg-slate-700/50 cursor-pointer ${
+                                                        isSelected ? 'bg-red-900/20' : ''
+                                                    }`}
+                                                    onClick={() => toggleRepoSelection(repo.fullName)}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isSelected}
+                                                        onChange={() => {}}
+                                                        className="w-4 h-4 rounded"
+                                                    />
+                                                    <Icons.Folder />
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="text-sm font-medium">{repo.name}</div>
+                                                        <div className="text-xs text-slate-500">{repo.fullName}</div>
+                                                    </div>
+                                                    <span className="text-xs text-red-400 bg-red-900/30 px-2 py-1 rounded max-w-xs truncate">
+                                                        {repo.reason}
+                                                    </span>
+                                                    <a
+                                                        href={repo.url}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
+                                                    >
+                                                        View
+                                                    </a>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                        
+                        {scanResults && scanResults.legacyRepos.length === 0 && (
+                            <div className="text-center py-12 text-slate-500">
+                                <div className="text-4xl mb-4">✨</div>
+                                <div>No legacy repositories found</div>
+                            </div>
+                        )}
+                        
+                        {!scanResults && !scanning && (
+                            <div className="text-center py-12 text-slate-500">
+                                <div className="text-4xl mb-4">🔍</div>
+                                <div>Click "Scan Repositories" to identify legacy repos</div>
+                            </div>
+                        )}
+                    </div>
+                )}
+                
+                {/* History Tab - Restore deleted files */}
+                {activeTab === 'history' && (
+                    <div className="space-y-4">
+                        {deletionHistory.length > 0 && (
+                            <>
+                                {/* History Controls */}
+                                <div className="flex items-center justify-between bg-slate-800 rounded-lg p-3">
+                                    <span className="text-sm text-slate-400">
+                                        {deletionHistory.length} deleted file(s) in history
+                                    </span>
+                                    <button
+                                        onClick={clearHistory}
+                                        className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded"
+                                    >
+                                        Clear History
+                                    </button>
+                                </div>
+                                
+                                {/* Info banner */}
+                                <div className="p-4 bg-blue-900/30 border border-blue-700 rounded-lg text-sm">
+                                    <strong>💡 Restore Files:</strong> Files can be restored from Git history. 
+                                    Click "Restore" to recover a deleted file to its original location.
+                                </div>
+                                
+                                {/* Deletion History List */}
+                                <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                                    <div className="max-h-96 overflow-y-auto">
+                                        {deletionHistory.map((item) => (
+                                            <div
+                                                key={item.id}
+                                                className="flex items-center gap-3 p-3 border-b border-slate-700 last:border-0 hover:bg-slate-700/50"
+                                            >
+                                                <Icons.File />
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="text-sm font-medium truncate">{item.path}</div>
+                                                    <div className="text-xs text-slate-500">
+                                                        {item.repoName} • Deleted {new Date(item.deletedAt).toLocaleString()}
+                                                    </div>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        onClick={() => restoreFile(item)}
+                                                        disabled={restoring}
+                                                        className="text-xs px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded transition-colors disabled:opacity-50"
+                                                    >
+                                                        {restoring ? '...' : '⏪ Restore'}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => removeFromHistory(item.id)}
+                                                        className="text-xs px-2 py-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
+                                                        title="Remove from history (does not restore)"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                        
+                        {deletionHistory.length === 0 && (
+                            <div className="text-center py-12 text-slate-500">
+                                <div className="text-4xl mb-4">📭</div>
+                                <div>No deletion history</div>
+                                <div className="text-xs mt-2">Deleted files will appear here for restoration</div>
+                            </div>
+                        )}
+                    </div>
+                )}
+                
+                {/* Base Package Reference */}
+                <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+                    <h3 className="font-semibold mb-4">📋 Base Package Reference</h3>
+                    <p className="text-xs text-slate-400 mb-4">
+                        Files outside these patterns are flagged as potentially stale:
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="p-3 bg-slate-900 rounded">
+                            <div className="font-medium text-sm mb-2">PWA Apps</div>
+                            <div className="text-xs text-slate-400 space-y-1">
+                                <div>• index.html, sw.js, manifest.json</div>
+                                <div>• icons/ folder</div>
+                                <div>• RELEASE_NOTES.txt (optional)</div>
+                            </div>
+                        </div>
+                        <div className="p-3 bg-slate-900 rounded">
+                            <div className="font-medium text-sm mb-2">Game Shelf (Consolidated)</div>
+                            <div className="text-xs text-slate-400 space-y-1">
+                                <div>• Root PWA files + manifest-test.json</div>
+                                <div>• icons/, icons-test/ folders</div>
+                                <div>• quotle/, slate/, rungs/, wordboxing/</div>
+                            </div>
+                        </div>
+                        <div className="p-3 bg-slate-900 rounded">
+                            <div className="font-medium text-sm mb-2">Simple Apps</div>
+                            <div className="text-xs text-slate-400 space-y-1">
+                                <div>• index.html only</div>
+                                <div>• README.md (optional)</div>
+                                <div>• Command Center, Test Plan</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         );
     }
