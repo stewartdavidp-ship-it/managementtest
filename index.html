@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="8.2.0">
+    <meta name="version" content="8.2.1">
     <meta name="gs-app-id" content="management">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -27,7 +27,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="margin-bottom:20px;"><svg viewBox="0 0 100 100" width="64" height="64" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="gsLoadGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#667eea"/><stop offset="100%" style="stop-color:#764ba2"/></linearGradient></defs><rect x="5" y="5" width="90" height="90" rx="20" fill="url(#gsLoadGrad)"/><g transform="rotate(-12, 35, 50)"><rect x="15" y="28" width="28" height="36" rx="4" fill="white"/><circle cx="43" cy="46" r="6" fill="white"/><text x="29" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#667eea" text-anchor="middle">G</text></g><g transform="rotate(12, 65, 50)"><rect x="57" y="28" width="28" height="36" rx="4" fill="rgba(255,255,255,0.9)"/><circle cx="57" cy="46" r="6" fill="url(#gsLoadGrad)"/><text x="71" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#764ba2" text-anchor="middle">S</text></g></svg></div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v8.2.0 starting...');
+    console.log('Command Center v8.2.1 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -1067,6 +1067,25 @@
                 const [owner, repoName] = repo.split('/');
                 return await this.request(`/repos/${owner}/${repoName}/contents/${path}?ref=${commitSha}`);
             } catch { return null; }
+        }
+        
+        // Get blob content directly via Git Blob API - bypasses CDN caching
+        async getBlobContent(repo, sha) {
+            try {
+                const [owner, repoName] = repo.split('/');
+                const blob = await this.request(`/repos/${owner}/${repoName}/git/blobs/${sha}?_=${Date.now()}`);
+                if (blob && blob.content) {
+                    return {
+                        content: blob.content,
+                        encoding: blob.encoding,
+                        size: blob.size
+                    };
+                }
+                return null;
+            } catch (e) {
+                console.warn(`Failed to get blob ${sha}:`, e);
+                return null;
+            }
         }
         
         async listRepoContents(repo, path = '') {
@@ -2670,21 +2689,35 @@
                             let base64Content;
                             let decodedContent = null;
                             
-                            // Handle large files (>1MB) - GitHub doesn't return content, only download_url
-                            if (!testFile.content && testFile.download_url) {
-                                console.log(`📦 Large file detected: ${filePath}, using download_url`);
-                                const cacheBustUrl = testFile.download_url + (testFile.download_url.includes('?') ? '&' : '?') + '_=' + Date.now();
-                                const response = await fetch(cacheBustUrl);
-                                const textContent = await response.text();
-                                // Re-encode to base64 for commit
-                                base64Content = btoa(unescape(encodeURIComponent(textContent)));
-                                decodedContent = textContent;
+                            // Handle large files (>1MB) - GitHub doesn't return content in contents API
+                            // Use Git Blob API instead of download_url to bypass CDN caching
+                            if (!testFile.content && testFile.sha) {
+                                console.log(`📦 Large file detected: ${filePath}, using Git Blob API (SHA: ${testFile.sha})`);
+                                const blob = await github.getBlobContent(app.testRepo, testFile.sha);
+                                if (blob && blob.content) {
+                                    base64Content = github.cleanBase64(blob.content);
+                                    decodedContent = github.decodeContent(blob.content);
+                                    console.log(`✓ Fetched ${filePath} via Blob API (${blob.size} bytes)`);
+                                } else {
+                                    // Fallback to download_url if blob API fails
+                                    console.log(`⚠ Blob API failed, falling back to download_url`);
+                                    if (testFile.download_url) {
+                                        const cacheBustUrl = testFile.download_url + (testFile.download_url.includes('?') ? '&' : '?') + '_=' + Date.now();
+                                        const response = await fetch(cacheBustUrl);
+                                        const textContent = await response.text();
+                                        base64Content = btoa(unescape(encodeURIComponent(textContent)));
+                                        decodedContent = textContent;
+                                    } else {
+                                        console.log(`⚠ ${filePath} has no content, no blob, and no download_url, skipping`);
+                                        continue;
+                                    }
+                                }
                             } else if (testFile.content) {
                                 // Normal file - use base64 directly
                                 base64Content = github.cleanBase64(testFile.content);
                                 decodedContent = github.decodeContent(testFile.content);
                             } else {
-                                console.log(`⚠ ${filePath} has no content and no download_url, skipping`);
+                                console.log(`⚠ ${filePath} has no content and no sha, skipping`);
                                 continue;
                             }
                             
@@ -2903,7 +2936,7 @@
                                 <Icons.GameShelfLogo size={32} />
                                 <div>
                                     <h1 className="text-lg font-bold">Command Center</h1>
-                                    <div className="text-xs text-slate-400">v8.2.0 • Large file promotion fix</div>
+                                    <div className="text-xs text-slate-400">v8.2.1 • Blob API for large files</div>
                                 </div>
                             </div>
                             <div className="flex items-center gap-1">
