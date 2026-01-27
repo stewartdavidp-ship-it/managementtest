@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="8.1.2">
+    <meta name="version" content="8.1.7">
     <meta name="gs-app-id" content="management">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -27,7 +27,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="margin-bottom:20px;"><svg viewBox="0 0 100 100" width="64" height="64" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="gsLoadGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#667eea"/><stop offset="100%" style="stop-color:#764ba2"/></linearGradient></defs><rect x="5" y="5" width="90" height="90" rx="20" fill="url(#gsLoadGrad)"/><g transform="rotate(-12, 35, 50)"><rect x="15" y="28" width="28" height="36" rx="4" fill="white"/><circle cx="43" cy="46" r="6" fill="white"/><text x="29" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#667eea" text-anchor="middle">G</text></g><g transform="rotate(12, 65, 50)"><rect x="57" y="28" width="28" height="36" rx="4" fill="rgba(255,255,255,0.9)"/><circle cx="57" cy="46" r="6" fill="url(#gsLoadGrad)"/><text x="71" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#764ba2" text-anchor="middle">S</text></g></svg></div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v8.1.2 starting...');
+    console.log('Command Center v8.1.7 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -946,7 +946,7 @@
         const icons = {
             html: '📄', js: '📜', css: '🎨', json: '📋', md: '📝',
             png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', svg: '🎨',
-            ico: '🔷', txt: '📃', xml: '📰'
+            ico: '🔷', txt: '📃', xml: '📰', yml: '⚙️', yaml: '⚙️'
         };
         return icons[ext] || '📄';
     }
@@ -973,20 +973,32 @@
         }
         
         async request(endpoint, options = {}) {
-            const response = await fetch(`${this.baseUrl}${endpoint}`, {
-                ...options,
-                headers: {
-                    'Authorization': `token ${this.token}`,
-                    'Accept': 'application/vnd.github.v3+json',
-                    'Content-Type': 'application/json',
-                    ...options.headers
+            const url = `${this.baseUrl}${endpoint}`;
+            try {
+                const response = await fetch(url, {
+                    ...options,
+                    headers: {
+                        'Authorization': `token ${this.token}`,
+                        'Accept': 'application/vnd.github.v3+json',
+                        'Content-Type': 'application/json',
+                        ...options.headers
+                    }
+                });
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({}));
+                    console.error('GitHub API Error:', {
+                        url,
+                        status: response.status,
+                        error,
+                        body: options.body ? JSON.parse(options.body) : null
+                    });
+                    throw new Error(error.message || `GitHub API error: ${response.status}`);
                 }
-            });
-            if (!response.ok) {
-                const error = await response.json().catch(() => ({}));
-                throw new Error(error.message || `GitHub API error: ${response.status}`);
+                return response.json();
+            } catch (e) {
+                console.error('Request failed:', url, e);
+                throw e;
             }
-            return response.json();
         }
         
         async listRepos() {
@@ -1093,15 +1105,39 @@
             return allFiles;
         }
         
-        async createOrUpdateFile(repo, path, content, message, sha = null) {
+        async createOrUpdateFile(repo, path, content, message, sha = null, branch = 'main') {
             const [owner, repoName] = repo.split('/');
             const body = {
                 message,
                 content: btoa(unescape(encodeURIComponent(content))),
-                committer: { name: 'Command Center', email: 'deploy@gameshelf.app' }
+                committer: { name: 'Command Center', email: 'deploy@gameshelf.app' },
+                branch
             };
             if (sha) body.sha = sha;
-            return this.request(`/repos/${owner}/${repoName}/contents/${path}`, { method: 'PUT', body: JSON.stringify(body) });
+            
+            const url = `/repos/${owner}/${repoName}/contents/${path}`;
+            console.log('createOrUpdateFile request:', { 
+                url,
+                repo, 
+                path, 
+                sha, 
+                branch,
+                messageLength: message.length, 
+                contentLength: content.length,
+                base64Length: body.content.length
+            });
+            
+            try {
+                return await this.request(url, { method: 'PUT', body: JSON.stringify(body) });
+            } catch (error) {
+                console.error('createOrUpdateFile failed:', {
+                    url,
+                    error: error.message,
+                    sha,
+                    bodyPreview: JSON.stringify(body).substring(0, 200)
+                });
+                throw error;
+            }
         }
         
         async deleteFile(repo, path, message, sha) {
@@ -1326,12 +1362,15 @@
             console.log('Tree items:', treeItems);
             
             // Create new tree
+            const treePayload = {
+                base_tree: treeSha,
+                tree: treeItems
+            };
+            console.log('Creating tree with payload:', JSON.stringify(treePayload, null, 2));
+            
             const newTree = await this.request(`/repos/${owner}/${repoName}/git/trees`, {
                 method: 'POST',
-                body: JSON.stringify({
-                    base_tree: treeSha,
-                    tree: treeItems
-                })
+                body: JSON.stringify(treePayload)
             });
             console.log('New tree SHA:', newTree.sha);
             
@@ -1880,7 +1919,7 @@
                             }
                             
                             const fileName = cleanPath.split('/').pop();
-                            const isText = /\.(html|js|css|json|md|txt|xml|svg)$/i.test(fileName);
+                            const isText = /\.(html|js|css|json|md|txt|xml|svg|yml|yaml)$/i.test(fileName);
                             
                             // Determine target path - preserve directory structure for non-HTML files
                             let targetPath;
@@ -1957,7 +1996,7 @@
                 reader.onload = (e) => {
                     const content = e.target.result;
                     const isText = file.type.startsWith('text/') || 
-                        /\.(html|js|css|json|md|txt|xml|svg)$/i.test(file.name);
+                        /\.(html|js|css|json|md|txt|xml|svg|yml|yaml)$/i.test(file.name);
                     
                     const parsed = parseFilename(file.name);
                     let version = null;
@@ -2015,6 +2054,21 @@
                         } else {
                             suggestedApp = parsed.app;
                         }
+                    } else if ((file.name.endsWith('.yml') || file.name.endsWith('.yaml')) && isText) {
+                        // Check if this is a Firebase/GitHub Actions workflow
+                        if (/firebase-action|FIREBASE_TOKEN|deploy.*functions/i.test(content)) {
+                            suggestedApp = 'firebase-functions';
+                            appDetection = {
+                                id: 'firebase-functions',
+                                confidence: 'high',
+                                method: 'workflow-pattern',
+                                matchCount: 1,
+                                matchedPatterns: ['GitHub Actions Firebase workflow']
+                            };
+                            console.log('=== YML FILE DETECTED AS FIREBASE WORKFLOW ===');
+                        } else {
+                            suggestedApp = parsed.app;
+                        }
                     } else {
                         suggestedApp = parsed.app;
                     }
@@ -2036,7 +2090,10 @@
                     
                     // Determine targetPath: use app-specific path if detected, else default logic
                     let targetPath;
-                    if (suggestedApp && DEFAULT_APP_DEFINITIONS[suggestedApp]) {
+                    if (suggestedApp === 'firebase-functions' && (cleanedName.endsWith('.yml') || cleanedName.endsWith('.yaml'))) {
+                        // Workflow files go to .github/workflows/
+                        targetPath = '.github/workflows/deploy.yml';
+                    } else if (suggestedApp && DEFAULT_APP_DEFINITIONS[suggestedApp]) {
                         targetPath = DEFAULT_APP_DEFINITIONS[suggestedApp].targetPath;
                     } else if (file.name.endsWith('.html')) {
                         targetPath = 'index.html';
@@ -2061,7 +2118,7 @@
                     }]);
                 };
                 
-                if (file.type.startsWith('text/') || /\.(html|js|css|json|md|txt|xml|svg)$/i.test(file.name)) {
+                if (file.type.startsWith('text/') || /\.(html|js|css|json|md|txt|xml|svg|yml|yaml)$/i.test(file.name)) {
                     reader.readAsText(file);
                 } else {
                     reader.readAsBinaryString(file);
@@ -2322,11 +2379,52 @@
                     encoding: f.encoding
                 }));
                 
-                const result = await github.batchCommit(
-                    repo,
-                    filesToCommit,
-                    `Deploy ${app.name} ${formatVersion(newVersion)} (${files.length} files)`
-                );
+                let result;
+                // Use simple Contents API for single files (more reliable than Git Data API)
+                if (filesToCommit.length === 1) {
+                    const file = filesToCommit[0];
+                    console.log('Single file deploy, using Contents API for:', file.path);
+                    
+                    // Get current file SHA if it exists (needed for update)
+                    let existingSha = null;
+                    try {
+                        const existingFile = await github.getFile(repo, file.path);
+                        if (existingFile) {
+                            existingSha = existingFile.sha;
+                            console.log('Existing file SHA:', existingSha);
+                        }
+                    } catch (e) {
+                        console.log('File does not exist yet, will create');
+                    }
+                    
+                    // Decode content if it's base64 encoded, otherwise use as-is
+                    let contentToSend = file.content;
+                    if (file.encoding === 'base64') {
+                        // Content is already base64, need to decode for createOrUpdateFile which re-encodes
+                        try {
+                            contentToSend = decodeURIComponent(escape(atob(file.content)));
+                        } catch (e) {
+                            console.log('Content is binary base64, using raw');
+                            contentToSend = atob(file.content);
+                        }
+                    }
+                    
+                    result = await github.createOrUpdateFile(
+                        repo,
+                        file.path,
+                        contentToSend,
+                        `Deploy ${app.name} ${formatVersion(newVersion)} (${files.length} files)`,
+                        existingSha
+                    );
+                    result.sha = result.commit.sha;
+                } else {
+                    // Multiple files - use batch commit (Git Data API)
+                    result = await github.batchCommit(
+                        repo,
+                        filesToCommit,
+                        `Deploy ${app.name} ${formatVersion(newVersion)} (${files.length} files)`
+                    );
+                }
                 deployment.commitSha = result.sha;
                 addStep('Creating commit', 'complete', result.sha.substring(0, 7));
                 
@@ -2401,6 +2499,19 @@
                 deployment.status = 'failed';
                 deployment.error = error.message;
                 addStep('Error', 'error', error.message);
+                console.error('Batch deployment failed:', error);
+                
+                // Check for workflow file permission issue
+                let errorMessage = error.message;
+                if (error.message.includes('Not Found') && filesToCommit.some(f => f.path.includes('.github/workflows'))) {
+                    errorMessage = 'Cannot update workflow files. Your GitHub token needs the "workflow" scope.\n\n' +
+                        'To fix:\n' +
+                        '1. Go to GitHub → Settings → Developer settings → Personal access tokens\n' +
+                        '2. Edit your token and add the "workflow" scope\n' +
+                        '3. Update the token in Command Center settings';
+                }
+                
+                await showAlert(errorMessage, 'Deployment Error');
             }
             
             deployment.completedAt = new Date().toISOString();
@@ -2730,7 +2841,7 @@
                                 <Icons.GameShelfLogo size={32} />
                                 <div>
                                     <h1 className="text-lg font-bold">Command Center</h1>
-                                    <div className="text-xs text-slate-400">v8.1.2 • Firebase Functions support</div>
+                                    <div className="text-xs text-slate-400">v8.1.7 • Firebase Functions + YML support</div>
                                 </div>
                             </div>
                             <div className="flex items-center gap-1">
@@ -3659,8 +3770,8 @@
                 if (activeDeployment.status === 'running') {
                     // Keep spinner going while deployment is in progress
                     setIsDeploying(true);
-                } else if (activeDeployment.status === 'success' || activeDeployment.status === 'error') {
-                    // Only stop spinner when deployment finishes
+                } else if (activeDeployment.status === 'success' || activeDeployment.status === 'failed' || activeDeployment.status === 'error') {
+                    // Only stop spinner when deployment finishes (success or failure)
                     setIsDeploying(false);
                     if (activeDeployment.status === 'success') {
                         setDeployCompleted(true);
@@ -3851,7 +3962,7 @@
                         </h2>
                         <div onDrop={onFileDrop} onDragOver={e => e.preventDefault()}
                             className="border-2 border-dashed border-slate-600 rounded-lg p-8 text-center hover:border-indigo-500 cursor-pointer">
-                            <input type="file" multiple accept=".html,.js,.css,.json,.zip" onChange={onFileDrop} className="hidden" id="upload" />
+                            <input type="file" multiple accept=".html,.js,.css,.json,.zip,.yml,.yaml" onChange={onFileDrop} className="hidden" id="upload" />
                             <label htmlFor="upload" className="cursor-pointer">
                                 <div className="text-4xl mb-3">📁</div>
                                 <div>Drop files here (HTML, JS, CSS, images...)</div>
