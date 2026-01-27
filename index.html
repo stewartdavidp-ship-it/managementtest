@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="8.1.7">
+    <meta name="version" content="8.1.8">
     <meta name="gs-app-id" content="management">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -27,7 +27,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="margin-bottom:20px;"><svg viewBox="0 0 100 100" width="64" height="64" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="gsLoadGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#667eea"/><stop offset="100%" style="stop-color:#764ba2"/></linearGradient></defs><rect x="5" y="5" width="90" height="90" rx="20" fill="url(#gsLoadGrad)"/><g transform="rotate(-12, 35, 50)"><rect x="15" y="28" width="28" height="36" rx="4" fill="white"/><circle cx="43" cy="46" r="6" fill="white"/><text x="29" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#667eea" text-anchor="middle">G</text></g><g transform="rotate(12, 65, 50)"><rect x="57" y="28" width="28" height="36" rx="4" fill="rgba(255,255,255,0.9)"/><circle cx="57" cy="46" r="6" fill="url(#gsLoadGrad)"/><text x="71" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#764ba2" text-anchor="middle">S</text></g></svg></div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v8.1.7 starting...');
+    console.log('Command Center v8.1.8 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -1023,7 +1023,9 @@
                 // For large files (>1MB), GitHub API doesn't return content - use download_url
                 if (!file.content && file.download_url) {
                     console.log(`Large file detected (${path}), using download_url`);
-                    const response = await fetch(file.download_url);
+                    // Add cache-busting to download_url
+                    const cacheBustUrl = file.download_url + (file.download_url.includes('?') ? '&' : '?') + '_=' + Date.now();
+                    const response = await fetch(cacheBustUrl);
                     const content = await response.text();
                     return { ...file, content: null, textContent: content };
                 }
@@ -2479,8 +2481,10 @@
                     updateApp(appId, { [target === 'prod' ? 'currentProdVersion' : 'currentTestVersion']: newVersion });
                 }
                 
-                // Refresh all versions to ensure UI is in sync with repos
-                setTimeout(() => refreshAllVersions(), 500);
+                // Don't refresh immediately - GitHub's CDN needs time to propagate
+                // The local state is already updated, and verification confirmed the deploy
+                // Refresh will happen on next manual refresh or page load
+                // setTimeout(() => refreshAllVersions(), 500); // DISABLED - causes version revert due to GitHub caching
                 
                 // Start monitoring live site for deployment completion
                 if (deployment.url && newVersion !== 'batch') {
@@ -2720,8 +2724,8 @@
                 deployment.url = getGitHubPagesUrl(app.prodRepo, app.subPath);
                 updateApp(appId, { currentProdVersion: testVersion });
                 
-                // Force refresh to ensure UI is in sync
-                setTimeout(() => refreshAllVersions(), 1000);
+                // Don't refresh immediately - GitHub's CDN needs time to propagate
+                // setTimeout(() => refreshAllVersions(), 1000); // DISABLED - causes version revert
                 
                 // Start monitoring live site for deployment completion
                 if (deployment.url && testVersion) {
@@ -2841,7 +2845,7 @@
                                 <Icons.GameShelfLogo size={32} />
                                 <div>
                                     <h1 className="text-lg font-bold">Command Center</h1>
-                                    <div className="text-xs text-slate-400">v8.1.7 • Firebase Functions + YML support</div>
+                                    <div className="text-xs text-slate-400">v8.1.8 • Firebase Functions + YML support</div>
                                 </div>
                             </div>
                             <div className="flex items-center gap-1">
