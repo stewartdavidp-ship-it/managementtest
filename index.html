@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Shelf Command Center</title>
-    <meta name="version" content="8.2.2">
+    <meta name="version" content="8.2.3">
     <meta name="gs-app-id" content="management">
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -27,7 +27,7 @@
     <div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;"><div style="text-align:center;"><div style="margin-bottom:20px;"><svg viewBox="0 0 100 100" width="64" height="64" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="gsLoadGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#667eea"/><stop offset="100%" style="stop-color:#764ba2"/></linearGradient></defs><rect x="5" y="5" width="90" height="90" rx="20" fill="url(#gsLoadGrad)"/><g transform="rotate(-12, 35, 50)"><rect x="15" y="28" width="28" height="36" rx="4" fill="white"/><circle cx="43" cy="46" r="6" fill="white"/><text x="29" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#667eea" text-anchor="middle">G</text></g><g transform="rotate(12, 65, 50)"><rect x="57" y="28" width="28" height="36" rx="4" fill="rgba(255,255,255,0.9)"/><circle cx="57" cy="46" r="6" fill="url(#gsLoadGrad)"/><text x="71" y="54" font-family="Arial" font-size="20" font-weight="bold" fill="#764ba2" text-anchor="middle">S</text></g></svg></div>Loading...</div></div></div>
 
     <script type="text/babel">
-    console.log('Command Center v8.2.2 starting...');
+    console.log('Command Center v8.2.3 starting...');
     
     // =========================================================================
     // FIREBASE CONFIG
@@ -313,6 +313,20 @@
                 beta: ['gameshelfbeta', 'gameshelf-beta']
             },
             detectionPatterns: ['<title>game\\s*shelf', 'gameshelfdata', 'game.shelf.pwa', '#setup-welcome']
+        },
+        beta: {
+            id: 'beta', name: 'Beta Hub', icon: '🚀',
+            targetPath: 'index.html', swPath: null, hasServiceWorker: false,
+            subPath: 'beta',  // Subfolder in consolidated repo
+            repos: { dev: '', test: '', prod: '', beta: '' },
+            versions: { dev: '', test: '', prod: '', beta: '' },
+            repoPatterns: {
+                dev: [],
+                test: [],
+                prod: ['gameshelf'],
+                beta: []
+            },
+            detectionPatterns: ['<title>Game Shelf Beta Hub', 'Beta Hub v\\d', 'beta-hub', 'Early Access signup']
         },
         slate: {
             id: 'slate', name: 'Slate', icon: '🪨',
@@ -2937,7 +2951,7 @@
                                 <Icons.GameShelfLogo size={32} />
                                 <div>
                                     <h1 className="text-lg font-bold">Command Center</h1>
-                                    <div className="text-xs text-slate-400">v8.2.2 • Stale files filter, fixed CleanupView crash</div>
+                                    <div className="text-xs text-slate-400">v8.2.3 • Added Beta Hub app support</div>
                                 </div>
                             </div>
                             <div className="flex items-center gap-1">
@@ -5815,7 +5829,7 @@
             gameshelf: {
                 required: ['index.html', 'sw.js', 'manifest.json', 'manifest-test.json'],
                 optional: ['RELEASE_NOTES.txt', 'CNAME'],
-                folders: ['icons', 'icons-test', 'quotle', 'slate', 'rungs', 'wordboxing']
+                folders: ['icons', 'icons-test', 'quotle', 'slate', 'rungs', 'wordboxing', 'beta']
             },
             simple: {
                 required: ['index.html'],
@@ -5826,7 +5840,7 @@
         
         // Define which repos are consolidated (should contain subfolders)
         const CONSOLIDATED_REPOS = {
-            'gameshelf': ['quotle', 'slate', 'rungs', 'wordboxing'],
+            'gameshelf': ['quotle', 'slate', 'rungs', 'wordboxing', 'beta'],
             'gameshelftest': ['quotle', 'slate', 'rungs', 'wordboxing']
         };
         
@@ -6308,116 +6322,121 @@
                 {activeTab === 'files' && (
                     <div className="space-y-4">
                         {scanResults && scanResults.staleFiles.length > 0 && (
-                            (() => {
-                                // Filter files based on search input
-                                const filteredFiles = fileFilter.trim() 
-                                    ? scanResults.staleFiles.filter(f => 
-                                        f.path.toLowerCase().includes(fileFilter.toLowerCase()) ||
-                                        f.repoName.toLowerCase().includes(fileFilter.toLowerCase())
-                                      )
-                                    : scanResults.staleFiles;
-                                
-                                return <>
-                                    {/* Filter Input */}
-                                    <div className="relative">
-                                        <input
-                                            type="text"
-                                            value={fileFilter}
-                                            onChange={(e) => setFileFilter(e.target.value)}
-                                            placeholder="Filter by filename or repo..."
-                                            className="w-full pl-10 pr-10 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm focus:outline-none focus:border-indigo-500"
-                                        />
-                                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-                                            <Icons.Search />
-                                        </div>
-                                        {fileFilter && (
-                                            <button
-                                                onClick={() => setFileFilter('')}
-                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-                                            >
-                                                <Icons.X />
-                                            </button>
-                                        )}
+                            <>
+                                {/* Filter Input */}
+                                <div className="relative">
+                                    <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-400">
+                                        <Icons.Search />
                                     </div>
-                                    
-                                    {/* Selection Controls */}
-                                    <div className="flex items-center justify-between bg-slate-800 rounded-lg p-3">
-                                        <div className="flex items-center gap-4">
-                                            <span className="text-sm text-slate-400">
-                                                {selectedFiles.size} selected
-                                                {fileFilter && ` • ${filteredFiles.length} of ${scanResults.staleFiles.length} shown`}
-                                                {!fileFilter && ` of ${scanResults.staleFiles.length}`}
-                                            </span>
-                                            <button
-                                                onClick={() => {
-                                                    const keysToSelect = filteredFiles.map(f => `${f.repo}:${f.path}`);
-                                                    setSelectedFiles(new Set(keysToSelect));
-                                                }}
-                                                className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
-                                            >
-                                                {fileFilter ? 'Select Filtered' : 'Select All'}
-                                            </button>
-                                            <button
-                                                onClick={clearFileSelection}
-                                                className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
-                                            >
-                                                Clear
-                                            </button>
-                                        </div>
+                                    <input
+                                        type="text"
+                                        placeholder="Filter by filename or repo..."
+                                        value={fileFilter}
+                                        onChange={(e) => setFileFilter(e.target.value)}
+                                        className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-10 pr-10 py-2 text-sm focus:outline-none focus:border-indigo-500"
+                                    />
+                                    {fileFilter && (
                                         <button
-                                            onClick={deleteSelectedFiles}
-                                            disabled={selectedFiles.size === 0 || deleting}
-                                            className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                                            onClick={() => setFileFilter('')}
+                                            className="absolute inset-y-0 right-3 flex items-center text-slate-400 hover:text-white"
                                         >
-                                            {deleting ? (
-                                                <><Icons.Refresh className="animate-spin" /> Deleting {deleteProgress.current}/{deleteProgress.total}</>
-                                            ) : (
-                                                <><Icons.Trash /> Delete Selected</>
-                                            )}
+                                            <Icons.X />
                                         </button>
-                                    </div>
+                                    )}
+                                </div>
+                                
+                                {/* Selection Controls */}
+                                {(() => {
+                                    const staleFiles = scanResults.staleFiles;
+                                    const filter = fileFilter.toLowerCase().trim();
+                                    const filteredFiles = filter 
+                                        ? staleFiles.filter(f => 
+                                            f.path.toLowerCase().includes(filter) || 
+                                            f.repoName.toLowerCase().includes(filter))
+                                        : staleFiles;
                                     
-                                    {/* File List */}
-                                    <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-                                        <div className="max-h-96 overflow-y-auto">
-                                            {filteredFiles.length === 0 ? (
-                                                <div className="p-8 text-center text-slate-500">
-                                                    No files match "{fileFilter}"
-                                                </div>
-                                            ) : filteredFiles.map((file, idx) => {
-                                                const fileKey = `${file.repo}:${file.path}`;
-                                                const isSelected = selectedFiles.has(fileKey);
-                                                return (
-                                                    <div
-                                                        key={fileKey}
-                                                        className={`flex items-center gap-3 p-3 border-b border-slate-700 last:border-0 hover:bg-slate-700/50 cursor-pointer ${
-                                                            isSelected ? 'bg-indigo-900/30' : ''
-                                                        }`}
-                                                        onClick={() => toggleFileSelection(fileKey)}
+                                    return (
+                                        <>
+                                            <div className="flex items-center justify-between bg-slate-800 rounded-lg p-3">
+                                                <div className="flex items-center gap-4">
+                                                    <span className="text-sm text-slate-400">
+                                                        {selectedFiles.size} selected • {filteredFiles.length} of {staleFiles.length} shown
+                                                    </span>
+                                                    <button
+                                                        onClick={() => {
+                                                            const newSelected = new Set(selectedFiles);
+                                                            filteredFiles.forEach(f => newSelected.add(`${f.repo}:${f.path}`));
+                                                            setSelectedFiles(newSelected);
+                                                        }}
+                                                        className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
                                                     >
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={isSelected}
-                                                            onChange={() => {}}
-                                                            className="w-4 h-4 rounded"
-                                                        />
-                                                        <Icons.File />
-                                                        <div className="flex-1 min-w-0">
-                                                            <div className="text-sm font-medium truncate">{file.path}</div>
-                                                            <div className="text-xs text-slate-500">
-                                                                {file.repoName} • {formatSize(file.size || 0)}
-                                                            </div>
+                                                        {filter ? 'Select Filtered' : 'Select All'}
+                                                    </button>
+                                                    <button
+                                                        onClick={clearFileSelection}
+                                                        className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
+                                                    >
+                                                        Clear
+                                                    </button>
+                                                </div>
+                                                <button
+                                                    onClick={deleteSelectedFiles}
+                                                    disabled={selectedFiles.size === 0 || deleting}
+                                                    className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                                                >
+                                                    {deleting ? (
+                                                        <><Icons.Refresh className="animate-spin" /> Deleting {deleteProgress.current}/{deleteProgress.total}</>
+                                                    ) : (
+                                                        <><Icons.Trash /> Delete Selected</>
+                                                    )}
+                                                </button>
+                                            </div>
+                                            
+                                            {/* File List */}
+                                            <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                                                <div className="max-h-96 overflow-y-auto">
+                                                    {filteredFiles.length === 0 ? (
+                                                        <div className="text-center py-8 text-slate-500">
+                                                            No files match "{fileFilter}"
                                                         </div>
-                                                        <span className="text-xs text-amber-400 bg-amber-900/30 px-2 py-1 rounded">
-                                                            {file.reason}
-                                                        </span>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                </>;
-                            })()
+                                                    ) : (
+                                                        filteredFiles.map((file, idx) => {
+                                                            const fileKey = `${file.repo}:${file.path}`;
+                                                            const isSelected = selectedFiles.has(fileKey);
+                                                            return (
+                                                                <div
+                                                                    key={fileKey}
+                                                                    className={`flex items-center gap-3 p-3 border-b border-slate-700 last:border-0 hover:bg-slate-700/50 cursor-pointer ${
+                                                                        isSelected ? 'bg-indigo-900/30' : ''
+                                                                    }`}
+                                                                    onClick={() => toggleFileSelection(fileKey)}
+                                                                >
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={isSelected}
+                                                                        onChange={() => {}}
+                                                                        className="w-4 h-4 rounded"
+                                                                    />
+                                                                    <Icons.File />
+                                                                    <div className="flex-1 min-w-0">
+                                                                        <div className="text-sm font-medium truncate">{file.path}</div>
+                                                                        <div className="text-xs text-slate-500">
+                                                                            {file.repoName} • {formatSize(file.size || 0)}
+                                                                        </div>
+                                                                    </div>
+                                                                    <span className="text-xs text-amber-400 bg-amber-900/30 px-2 py-1 rounded">
+                                                                        {file.reason}
+                                                                    </span>
+                                                                </div>
+                                                            );
+                                                        })
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </>
+                                    );
+                                })()}
+                            </>
                         )}
                         
                         {scanResults && scanResults.staleFiles.length === 0 && (
