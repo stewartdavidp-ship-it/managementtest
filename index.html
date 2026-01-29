@@ -606,9 +606,11 @@
                     name: app.name,
                     icon: app.icon,
                     targetPath: app.targetPath,
+                    subPath: app.subPath || '',  // v8.2.8: Include subPath for consolidated repo apps
                     swPath: app.swPath,
                     hasServiceWorker: app.hasServiceWorker,
                     repoPatterns: app.repoPatterns,
+                    detectionPatterns: app.detectionPatterns,  // v8.2.8: Include for app detection
                     // Legacy format fields
                     testRepo: app.repos.test || '',
                     prodRepo: app.repos.prod || '',
@@ -2960,7 +2962,7 @@
                                 <Icons.GameShelfLogo size={32} />
                                 <div>
                                     <h1 className="text-lg font-bold">Command Center</h1>
-                                    <div className="text-xs text-slate-400">v8.2.8 • Archive validates Beta Hub</div>
+                                    <div className="text-xs text-slate-400">v8.2.8 • Beta Hub prod-only default</div>
                                 </div>
                             </div>
                             <div className="flex items-center gap-1">
@@ -3852,7 +3854,7 @@
         const [deployTarget, setDeployTarget] = React.useState({ appId: 'management', target: 'test' });
         const [isDeploying, setIsDeploying] = React.useState(false);
         const [deployCompleted, setDeployCompleted] = React.useState(false);
-        const [lastCompletedDeployId, setLastCompletedDeployId] = React.useState(null); // v8.2.7: Track which deployment completed
+        const [lastCompletedDeployId, setLastCompletedDeployId] = React.useState(null); // v8.2.8: Track which deployment completed
         const configuredApps = Object.values(apps).filter(a => a.testRepo || a.prodRepo);
         
         // Auto-select detected app when staging new files
@@ -3905,7 +3907,7 @@
                 } else if (activeDeployment.status === 'success' || activeDeployment.status === 'failed' || activeDeployment.status === 'error') {
                     // Only stop spinner when deployment finishes (success or failure)
                     setIsDeploying(false);
-                    // v8.2.7: Only set deployCompleted if this is a NEW completed deployment
+                    // v8.2.8: Only set deployCompleted if this is a NEW completed deployment
                     if (activeDeployment.status === 'success' && activeDeployment.id !== lastCompletedDeployId) {
                         setDeployCompleted(true);
                         setLastCompletedDeployId(activeDeployment.id);
@@ -9736,15 +9738,12 @@ const pushIssueToCommandCenter = async (testResult) => {
                 // Map app folders to app IDs
                 const folderToAppId = {
                     'gameshelf': 'gameshelf',
-                    'beta': 'beta',
                     'quotle': 'quotle', 
                     'rungs': 'rungs',
                     'slate': 'slate',
                     'wordboxing': 'wordboxing',
                     'command-center': 'management',
-                    'testplan': 'testplan',
-                    'landing': 'landing',
-                    'firebase-functions': 'firebase-functions'
+                    'testplan': 'testplan'
                 };
                 
                 // Check each app folder
