@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.36.5">
+    <meta name="version" content="8.38.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -3572,6 +3572,7 @@
         getDefaultConfig() {
             return {
                 version: '7.0.0',
+                ownerName: '',
                 environments: { ...DEFAULT_ENVIRONMENTS },
                 apps: JSON.parse(JSON.stringify(DEFAULT_APP_DEFINITIONS)),
                 projects: JSON.parse(JSON.stringify(SEED_PROJECTS))
@@ -3594,6 +3595,11 @@
                 stored.environments = defaults.environments;
             } else {
                 stored.environments = { ...defaults.environments, ...stored.environments };
+            }
+            
+            // v8.37.0: Ensure ownerName field exists
+            if (stored.ownerName === undefined) {
+                stored.ownerName = '';
             }
             
             // v8.12.0: Ensure projects structure exists — one-time migration
@@ -7190,7 +7196,7 @@
                                                     {v === 'integrations' && '⚡ Integrations'}
                                                     {v === 'issues' && '🐛 Issues'}
                                                     {v === 'portfolio' && '📊 Portfolio'}
-                                                    {v === 'optimize' && '🎯 Optimize'}
+                                                    {v === 'optimize' && '🎯 Setup Guide'}
                                                     {v === 'domains' && '🌐 Domains'}
                                                     {v === 'cleanup' && '🗑️ Cleanup'}
                                                     {v === 'files' && '📁 Files'}
@@ -7580,7 +7586,7 @@
                     )}
                     
                     {view === 'backlog' && (
-                        <BacklogView apps={apps} showAlert={showAlert} showConfirm={showConfirm} showPrompt={showPrompt} setView={setView} />
+                        <BacklogView apps={apps} showAlert={showAlert} showConfirm={showConfirm} showPrompt={showPrompt} setView={setView} config={config} />
                     )}
                     
                     {view === 'config' && (
@@ -7596,7 +7602,7 @@
                     )}
                     
                     {view === 'settings' && (
-                        <SettingsView token={githubToken} setToken={setGithubToken} settings={settings} setSettings={setSettings} repoCount={availableRepos.length} syncStatus={syncStatus} onForceSync={handleForceSync} />
+                        <SettingsView token={githubToken} setToken={setGithubToken} settings={settings} setSettings={setSettings} repoCount={availableRepos.length} syncStatus={syncStatus} onForceSync={handleForceSync} config={config} onConfigChange={handleConfigChange} />
                     )}
                     
                     {view === 'setup' && (
@@ -11075,7 +11081,7 @@
                     <div className="flex items-center gap-3">
                         <span className="text-2xl">🎯</span>
                         <div>
-                            <h1 className="text-2xl font-bold">Environment Optimization</h1>
+                            <h1 className="text-2xl font-bold">Setup Guide</h1>
                             <p className="text-slate-400 text-sm">Configure Claude Projects, skills, and platform features for maximum efficiency</p>
                         </div>
                     </div>
@@ -17217,52 +17223,54 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         admin: { label: 'Admin', icon: '🔐', description: 'Administration or management panel' }
     };
     
+    // v8.38.0: PM-first intent questions (Phase 2.1 + 2.4)
+    // Questions capture INTENT. The package engine translates intent into technology.
+    // Removed: tool.settingsPersistence (redundant with dataPersistence)
+    // Merged: dashboard.autoRefresh + dashboard.realtime → dashboard.dataUpdates
     const CATEGORY_QUESTIONS = {
         game: [
-            { id: 'dailyReset', label: 'Daily puzzle / reset mechanic?', type: 'toggle', default: true, drives: 'Daily reset logic, streak tracking, puzzle number' },
-            { id: 'difficultyModes', label: 'Difficulty modes?', type: 'select', options: ['none', 'easy-hard', 'multiple'], default: 'easy-hard', drives: 'Mode selector in menu, separate stats' },
-            { id: 'scoringSystem', label: 'Scoring system?', type: 'select', options: ['none', 'points', 'tries', 'time'], default: 'points', drives: 'Score display, personal best tracking' },
-            { id: 'shareResults', label: 'Share results?', type: 'toggle', default: true, drives: 'Share button, navigator.share pattern' },
-            { id: 'multiplayer', label: 'Multiplayer or social features?', type: 'toggle', default: false, drives: 'Firebase auth, friend system, battle infrastructure' },
-            { id: 'streaks', label: 'Streaks?', type: 'toggle', default: true, drives: 'Streak counter, daily check, localStorage persistence' },
-            { id: 'achievements', label: 'Achievements?', type: 'toggle', default: false, drives: 'Achievement definitions, unlock tracking' },
-            { id: 'soundEffects', label: 'Sound effects?', type: 'toggle', default: false, drives: 'Audio manager, mute toggle in settings' },
-            { id: 'tutorial', label: 'Tutorial / onboarding?', type: 'toggle', default: true, drives: 'Welcome modal, guided walkthrough' }
+            { id: 'dailyReset', label: 'Does the game reset daily with a new puzzle?', type: 'toggle', default: true, drives: 'Daily reset logic, streak tracking, puzzle number' },
+            { id: 'difficultyModes', label: 'How many difficulty levels?', type: 'select', options: ['none', 'easy-hard', 'multiple'], optionLabels: ['None', 'Two modes (e.g. Easy/Hard)', 'Multiple levels'], default: 'easy-hard', drives: 'Mode selector, separate stats per mode' },
+            { id: 'scoringSystem', label: 'How are players scored?', type: 'select', options: ['none', 'points', 'tries', 'time'], optionLabels: ['No scoring', 'Points earned', 'Number of attempts', 'Time to complete'], default: 'points', drives: 'Score display, personal best tracking' },
+            { id: 'shareResults', label: 'Can players share their results?', type: 'toggle', default: true, drives: 'Share button with clipboard fallback' },
+            { id: 'multiplayer', label: 'Will players interact with each other?', type: 'toggle', default: false, drives: 'User accounts, friend system, battles or leaderboard' },
+            { id: 'streaks', label: 'Track daily play streaks?', type: 'toggle', default: true, drives: 'Streak counter, daily play detection' },
+            { id: 'achievements', label: 'Reward milestones with achievements?', type: 'toggle', default: false, drives: 'Achievement system, unlock notifications' },
+            { id: 'soundEffects', label: 'Include sound effects?', type: 'toggle', default: false, drives: 'Audio on key events, mute toggle' },
+            { id: 'tutorial', label: 'Guide new players through the game?', type: 'toggle', default: true, drives: 'Welcome walkthrough, replayable from menu' }
         ],
         tool: [
-            { id: 'dataPersistence', label: 'Data persistence?', type: 'select', options: ['none', 'localStorage', 'Firebase'], default: 'localStorage', drives: 'Storage helpers, data migration strategy' },
-            { id: 'primaryDataType', label: 'Primary data type?', type: 'text', placeholder: 'e.g. label sheets, expense records', default: '', drives: 'CRUD scaffolding, data model hints' },
-            { id: 'importExport', label: 'Import/export?', type: 'toggle', default: true, drives: 'File input, export function, format handling' },
-            { id: 'printSupport', label: 'Print support?', type: 'toggle', default: false, drives: 'Print CSS, print preview, page break handling' },
-            { id: 'multiItem', label: 'Multi-item management?', type: 'toggle', default: true, drives: 'List view, item cards, select/bulk actions' },
-            { id: 'searchFilter', label: 'Search/filter?', type: 'toggle', default: true, drives: 'Search input, filter controls' },
-            { id: 'undoRedo', label: 'Undo/redo?', type: 'toggle', default: false, drives: 'State history, undo stack' },
-            { id: 'settingsPersistence', label: 'Settings persistence?', type: 'toggle', default: true, drives: 'Settings object in localStorage' },
-            { id: 'keyboardShortcuts', label: 'Keyboard shortcuts?', type: 'toggle', default: false, drives: 'Keyboard event listeners, shortcut reference' }
+            { id: 'dataPersistence', label: 'Should data save between sessions?', type: 'select', options: ['none', 'localStorage', 'Firebase'], optionLabels: ['No — starts fresh each time', 'Yes — on this device', 'Yes — synced across devices'], default: 'localStorage', drives: 'Storage strategy and data migration' },
+            { id: 'primaryDataType', label: 'What does the user work with?', type: 'text', placeholder: 'e.g. label sheets, expense records, recipes', default: '', drives: 'Data model and CRUD scaffolding' },
+            { id: 'multiItem', label: 'Work with a list of items or a single item?', type: 'select', options: [true, false], optionLabels: ['A list of items (browse, select, manage)', 'A single item at a time'], default: true, drives: 'List view, item cards, bulk actions' },
+            { id: 'searchFilter', label: 'Will users need to search or filter?', type: 'toggle', default: true, drives: 'Search input, filter controls' },
+            { id: 'importExport', label: 'Import or export data?', type: 'toggle', default: true, drives: 'File input, download as JSON/CSV' },
+            { id: 'printSupport', label: 'Does anything need to be printed?', type: 'toggle', default: false, drives: 'Print-friendly layout, page breaks' },
+            { id: 'undoRedo', label: 'Should users be able to undo mistakes?', type: 'toggle', default: false, drives: 'Undo/redo with Ctrl+Z support' },
+            { id: 'keyboardShortcuts', label: 'Power-user keyboard shortcuts?', type: 'toggle', default: false, drives: 'Key bindings, shortcut reference' }
         ],
         dashboard: [
-            { id: 'dataSources', label: 'Data sources?', type: 'multi-select', options: ['Firebase', 'API', 'localStorage', 'manual'], default: ['Firebase'], drives: 'Data fetching pattern, refresh strategy' },
-            { id: 'layout', label: 'Layout?', type: 'select', options: ['cards', 'table', 'mixed'], default: 'cards', drives: 'Grid vs table CSS, component structure' },
-            { id: 'autoRefresh', label: 'Auto-refresh?', type: 'toggle', default: true, drives: 'Refresh interval, last-updated display' },
-            { id: 'filtering', label: 'Filtering?', type: 'toggle', default: true, drives: 'Filter controls, query params' },
-            { id: 'dateRange', label: 'Date range selector?', type: 'toggle', default: true, drives: 'Date picker, time-scoped queries' },
-            { id: 'exportData', label: 'Export data?', type: 'toggle', default: false, drives: 'CSV/JSON export function' },
-            { id: 'realtime', label: 'Real-time updates?', type: 'toggle', default: false, drives: 'Firebase listeners, live indicators' }
+            { id: 'dataSources', label: 'Where does the data come from?', type: 'multi-select', options: ['Firebase', 'API', 'localStorage', 'manual'], optionLabels: ['Database', 'External service', 'Browser storage', 'User input'], default: ['Firebase'], drives: 'Data fetching and refresh strategy' },
+            { id: 'layout', label: 'How should data be displayed?', type: 'select', options: ['cards', 'table', 'mixed'], optionLabels: ['Visual cards', 'Data table', 'Mix of both'], default: 'cards', drives: 'Layout pattern and component structure' },
+            { id: 'dataUpdates', label: 'How should data stay current?', type: 'select', options: ['manual', 'periodic', 'realtime'], optionLabels: ['Manual refresh only', 'Auto-refresh periodically', 'Live — updates instantly'], default: 'periodic', drives: 'Refresh interval or live listeners' },
+            { id: 'filtering', label: 'Can users filter what they see?', type: 'toggle', default: true, drives: 'Filter controls, active filter display' },
+            { id: 'dateRange', label: 'Filter by date range?', type: 'toggle', default: true, drives: 'Date picker, preset ranges' },
+            { id: 'exportData', label: 'Download data as a file?', type: 'toggle', default: false, drives: 'Export to CSV or JSON' }
         ],
         content: [
-            { id: 'contentType', label: 'Static or dynamic?', type: 'select', options: ['static', 'dynamic'], default: 'static', drives: 'Build vs runtime content strategy' },
-            { id: 'contentSource', label: 'Content source?', type: 'select', options: ['hardcoded', 'Firebase', 'API', 'CMS'], default: 'hardcoded', drives: 'Data loading pattern' },
-            { id: 'seo', label: 'SEO needed?', type: 'toggle', default: false, drives: 'Meta tags, semantic HTML, OG tags' },
-            { id: 'mediaTypes', label: 'Media types?', type: 'multi-select', options: ['text', 'images', 'video', 'audio'], default: ['text'], drives: 'Media handling, CDN considerations' },
-            { id: 'navPattern', label: 'Navigation pattern?', type: 'select', options: ['single-page', 'multi-section', 'paginated'], default: 'single-page', drives: 'Nav structure, scroll behavior' }
+            { id: 'contentType', label: 'Does the content change?', type: 'select', options: ['static', 'dynamic'], optionLabels: ['Same every time', 'Updates regularly'], default: 'static', drives: 'Static vs runtime content strategy' },
+            { id: 'contentSource', label: 'Where does content come from?', type: 'select', options: ['hardcoded', 'Firebase', 'API', 'CMS'], optionLabels: ['Built into the app', 'Database', 'External service', 'Content management system'], default: 'hardcoded', drives: 'Data loading pattern' },
+            { id: 'seo', label: 'Should search engines find this?', type: 'toggle', default: false, drives: 'SEO meta tags, Open Graph, semantic HTML' },
+            { id: 'mediaTypes', label: 'What types of content?', type: 'multi-select', options: ['text', 'images', 'video', 'audio'], default: ['text'], drives: 'Media handling and optimization' },
+            { id: 'navPattern', label: 'How much content?', type: 'select', options: ['single-page', 'multi-section', 'paginated'], optionLabels: ['One page', 'Multiple sections', 'Many pages'], default: 'single-page', drives: 'Navigation structure, scroll behavior' }
         ],
         admin: [
-            { id: 'authRequired', label: 'Auth required?', type: 'toggle', default: true, drives: 'Firebase auth, login gate, session management' },
-            { id: 'roleAccess', label: 'Role-based access?', type: 'toggle', default: false, drives: 'Role checking, UI permission gating' },
-            { id: 'crudOps', label: 'CRUD operations?', type: 'toggle', default: true, drives: 'Data tables, edit modals, delete confirmation' },
-            { id: 'auditLog', label: 'Audit logging?', type: 'toggle', default: false, drives: 'Action log, timestamp tracking' },
-            { id: 'bulkOps', label: 'Bulk operations?', type: 'toggle', default: true, drives: 'Multi-select, batch actions' },
-            { id: 'dataViz', label: 'Data visualization?', type: 'toggle', default: false, drives: 'Charts, summary cards' }
+            { id: 'authRequired', label: 'Must users sign in?', type: 'toggle', default: true, drives: 'Login flow, session management' },
+            { id: 'roleAccess', label: 'Different permission levels?', type: 'toggle', default: false, drives: 'Role definitions, permission checks' },
+            { id: 'crudOps', label: 'Can users create, edit, and delete records?', type: 'toggle', default: true, drives: 'Data tables, edit forms, delete confirmation' },
+            { id: 'auditLog', label: 'Track who changed what?', type: 'toggle', default: false, drives: 'Action log with timestamps and attribution' },
+            { id: 'bulkOps', label: 'Act on multiple items at once?', type: 'toggle', default: true, drives: 'Multi-select, batch operations' },
+            { id: 'dataViz', label: 'Charts or visual summaries?', type: 'toggle', default: false, drives: 'Charts, summary cards, trend indicators' }
         ]
     };
     
@@ -17292,19 +17300,19 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         'celebration-effects': { label: 'Celebration effects on special achievements', group: 'game', condition: (cat, ans) => cat === 'game' && ans.achievements },
         'tutorial-onboarding': { label: 'Tutorial: welcome modal → guided steps → replay from menu', group: 'game', condition: (cat, ans) => cat === 'game' && ans.tutorial },
         'sound-manager': { label: 'Audio manager with mute toggle', group: 'game', condition: (cat, ans) => cat === 'game' && ans.soundEffects },
-        'tab-nav': { label: 'Tab navigation pattern', group: 'tool', condition: (cat, ans) => cat === 'tool' && ans.multiItem },
-        'settings-storage': { label: 'Settings persistence (single localStorage key with JSON)', group: 'tool', condition: (cat, ans) => cat === 'tool' && ans.settingsPersistence },
+        'tab-nav': { label: 'Tab navigation pattern', group: 'tool', condition: (cat, ans) => cat === 'tool' && (ans.multiItem === true || ans.multiItem === 'true') },
+        'settings-storage': { label: 'Settings persistence (single localStorage key with JSON)', group: 'tool', condition: (cat, ans) => cat === 'tool' && ans.dataPersistence !== 'none' },
         'import-export': { label: 'Import/export functions', group: 'tool', condition: (cat, ans) => cat === 'tool' && ans.importExport },
         'print-css': { label: 'Print-friendly CSS', group: 'tool', condition: (cat, ans) => cat === 'tool' && ans.printSupport },
         'keyboard-shortcuts': { label: 'Keyboard shortcuts with reference panel', group: 'tool', condition: (cat, ans) => cat === 'tool' && ans.keyboardShortcuts },
         'undo-redo': { label: 'Undo/redo with state history', group: 'tool', condition: (cat, ans) => cat === 'tool' && ans.undoRedo },
         'firebase-auth': { label: 'Firebase Auth: Google sign-in flow with auth state listener', group: 'firebase', condition: (cat, ans) => (cat === 'game' && ans.multiplayer) || (cat === 'admin' && ans.authRequired) || (cat === 'dashboard' && ans.dataSources?.includes('Firebase')) },
         'firebase-rtdb': { label: 'Firebase RTDB: read/write helpers at specified paths', group: 'firebase', condition: (cat, ans) => (cat === 'game' && ans.multiplayer) || (cat === 'admin') || (cat === 'dashboard' && ans.dataSources?.includes('Firebase')) || (cat === 'tool' && ans.dataPersistence === 'Firebase') },
-        'firebase-connection': { label: 'Connection status indicator', group: 'firebase', condition: (cat, ans) => (cat === 'game' && ans.multiplayer) || (cat === 'dashboard' && ans.realtime) },
-        'auto-refresh': { label: 'Auto-refresh with last-updated display', group: 'dashboard', condition: (cat, ans) => cat === 'dashboard' && ans.autoRefresh },
+        'firebase-connection': { label: 'Connection status indicator', group: 'firebase', condition: (cat, ans) => (cat === 'game' && ans.multiplayer) || (cat === 'dashboard' && ans.dataUpdates === 'realtime') },
+        'auto-refresh': { label: 'Auto-refresh with last-updated display', group: 'dashboard', condition: (cat, ans) => cat === 'dashboard' && ans.dataUpdates === 'periodic' },
         'date-range': { label: 'Date range selector for time-scoped queries', group: 'dashboard', condition: (cat, ans) => cat === 'dashboard' && ans.dateRange },
         'data-export': { label: 'CSV/JSON data export', group: 'dashboard', condition: (cat, ans) => cat === 'dashboard' && ans.exportData },
-        'realtime-updates': { label: 'Real-time Firebase listeners with live indicators', group: 'dashboard', condition: (cat, ans) => cat === 'dashboard' && ans.realtime },
+        'realtime-updates': { label: 'Real-time Firebase listeners with live indicators', group: 'dashboard', condition: (cat, ans) => cat === 'dashboard' && ans.dataUpdates === 'realtime' },
         'seo-tags': { label: 'SEO meta tags, semantic HTML, OG tags', group: 'content', condition: (cat, ans) => cat === 'content' && ans.seo },
         'role-access': { label: 'Role-based access control with UI permission gating', group: 'admin', condition: (cat, ans) => cat === 'admin' && ans.roleAccess },
         'audit-logging': { label: 'Audit logging with timestamps', group: 'admin', condition: (cat, ans) => cat === 'admin' && ans.auditLog },
@@ -17329,11 +17337,11 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         }
         
         if (category === 'tool') {
-            if (answers.multiItem) features.push({ title: 'Multi-item list with CRUD', description: 'List view, item cards, create/edit/delete with confirmation', priority: 'core', effort: 'session' });
+            if (answers.multiItem === true || answers.multiItem === 'true') features.push({ title: 'Multi-item list with CRUD', description: 'List view, item cards, create/edit/delete with confirmation', priority: 'core', effort: 'session' });
             if (answers.searchFilter) features.push({ title: 'Search and filter controls', description: 'Text search, filter dropdowns, clear filters action', priority: 'core', effort: 'quick' });
             if (answers.importExport) features.push({ title: 'Import/export functionality', description: 'File input for import, export to JSON/CSV, format validation', priority: 'core', effort: 'session' });
             if (answers.printSupport) features.push({ title: 'Print support with preview', description: 'Print-friendly CSS, print preview, page break handling', priority: 'core', effort: 'session' });
-            if (answers.settingsPersistence) features.push({ title: 'Persistent settings', description: 'Settings object in localStorage, settings UI in menu', priority: 'core', effort: 'quick' });
+            if (answers.dataPersistence !== 'none') features.push({ title: 'Persistent settings', description: 'Settings object in localStorage, settings UI in menu', priority: 'core', effort: 'quick' });
             if (answers.undoRedo) features.push({ title: 'Undo/redo system', description: 'State history stack, keyboard shortcuts Ctrl+Z/Y', priority: 'nice-to-have', effort: 'session' });
             if (answers.keyboardShortcuts) features.push({ title: 'Keyboard shortcuts', description: 'Key bindings for common actions, shortcut reference panel', priority: 'nice-to-have', effort: 'quick' });
             if (answers.dataPersistence === 'Firebase') features.push({ title: 'Firebase data persistence', description: 'Firebase RTDB storage with auth, sync status indicator', priority: 'core', effort: 'session' });
@@ -17342,10 +17350,10 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         if (category === 'dashboard') {
             features.push({ title: `${answers.layout === 'cards' ? 'Card grid' : answers.layout === 'table' ? 'Data table' : 'Mixed'} layout`, description: `Primary data display using ${answers.layout} pattern`, priority: 'core', effort: 'session' });
             if (answers.filtering) features.push({ title: 'Filter controls', description: 'Filter dropdowns, active filter display, clear all action', priority: 'core', effort: 'quick' });
-            if (answers.autoRefresh) features.push({ title: 'Auto-refresh with interval', description: 'Configurable refresh interval, last-updated timestamp display', priority: 'core', effort: 'quick' });
+            if (answers.dataUpdates === 'periodic') features.push({ title: 'Auto-refresh with interval', description: 'Configurable refresh interval, last-updated timestamp display', priority: 'core', effort: 'quick' });
+            if (answers.dataUpdates === 'realtime') features.push({ title: 'Real-time live updates', description: 'Firebase listeners, live update indicators, connection status', priority: 'core', effort: 'session' });
             if (answers.dateRange) features.push({ title: 'Date range selector', description: 'Date picker for time-scoped data queries, preset ranges', priority: 'core', effort: 'session' });
             if (answers.exportData) features.push({ title: 'Data export (CSV/JSON)', description: 'Export current view to CSV or JSON format', priority: 'nice-to-have', effort: 'quick' });
-            if (answers.realtime) features.push({ title: 'Real-time live updates', description: 'Firebase listeners, live update indicators, connection status', priority: 'nice-to-have', effort: 'session' });
         }
         
         if (category === 'content') {
@@ -17474,13 +17482,13 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         md += `- **App ID:** ${app.id}\n`;
         md += `\n`;
         
-        // === Section: V1 Scope ===
+        // === Section: Launch Scope ===
         const coreFeatures = (scopeData.v1Features || []).filter(f => f.priority === 'core');
         const niceFeatures = (scopeData.v1Features || []).filter(f => f.priority === 'nice-to-have');
         const outFeatures = (scopeData.v1Features || []).filter(f => f.priority === 'out-of-scope');
         const futureFeatures = scopeData.futureFeatures || [];
         
-        md += `## V1 Scope\n\n`;
+        md += `## Launch Scope\n\n`;
         
         if (coreFeatures.length > 0) {
             md += `### Must Build (Core)\n`;
@@ -17834,7 +17842,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         md += `## Planned Features\n\n`;
         
         if (coreFeatures.length > 0) {
-            md += `### Phase 1: Core (V1 Must Build)\n\n`;
+            md += `### Phase 1: Core (Must Build)\n\n`;
             coreFeatures.forEach(f => {
                 md += `- [ ] **${f.title}**`;
                 if (f.description) md += ` — ${f.description}`;
@@ -17916,8 +17924,8 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         return md;
     }
     
-    // ProjectScopeModal — 4-step scoping flow
-    function ProjectScopeModal({ app, apps, onSave, onCancel, showAlert }) {
+    // ProjectScopeModal — 3-step scoping flow (v8.37.0: removed Step 4 Standards)
+    function ProjectScopeModal({ app, apps, onSave, onCancel, showAlert, config }) {
         const [step, setStep] = React.useState(1);
         
         // Step 1: Describe
@@ -17943,9 +17951,8 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         const [keyDecisions, setKeyDecisions] = React.useState(app?.lifecycle?.scope?.keyDecisions || []);
         const [featuresGenerated, setFeaturesGenerated] = React.useState(false);
         
-        // Step 4: Standards
+        // Standards (auto-assembled silently — no user step)
         const [startingStandards, setStartingStandards] = React.useState(app?.lifecycle?.scope?.startingStandards || []);
-        const [standardsAssembled, setStandardsAssembled] = React.useState(false);
         
         // New feature/decision forms
         const [newFeatureTitle, setNewFeatureTitle] = React.useState('');
@@ -17960,11 +17967,19 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                 CATEGORY_QUESTIONS[category].forEach(q => {
                     defaults[q.id] = existingAnswers[q.id] !== undefined ? existingAnswers[q.id] : q.default;
                 });
+                // Migrate old dashboard questions: autoRefresh + realtime → dataUpdates
+                if (category === 'dashboard' && !existingAnswers.dataUpdates) {
+                    if (existingAnswers.realtime) defaults.dataUpdates = 'realtime';
+                    else if (existingAnswers.autoRefresh) defaults.dataUpdates = 'periodic';
+                    else defaults.dataUpdates = 'manual';
+                }
+                // Migrate old tool.settingsPersistence → derived from dataPersistence
                 setCategoryAnswers(defaults);
             }
         }, [category]);
         
         // Auto-generate features when moving from step 2 → 3
+        // Auto-assemble standards when moving from step 2 → 3
         const handleStep2Next = () => {
             if (!featuresGenerated) {
                 const generated = generateFeaturesFromScope(category, categoryAnswers);
@@ -17974,18 +17989,6 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                 setFeaturesGenerated(true);
             }
             setStep(3);
-        };
-        
-        // Auto-assemble standards when moving from step 3 → 4
-        const handleStep3Next = () => {
-            if (!standardsAssembled) {
-                const assembled = assembleStartingStandards(category, categoryAnswers);
-                if (startingStandards.length === 0) {
-                    setStartingStandards(assembled);
-                }
-                setStandardsAssembled(true);
-            }
-            setStep(4);
         };
         
         // Add feature
@@ -18015,15 +18018,9 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
             setV1Features(prev => prev.map((f, i) => i === idx ? { ...f, [field]: value } : f));
         };
         
-        // Toggle standard
-        const toggleStandard = (id) => {
-            setStartingStandards(prev => 
-                prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
-            );
-        };
-        
-        // Final save
+        // Final save — standards auto-assembled silently
         const handleSave = () => {
+            const autoStandards = assembleStartingStandards(category, categoryAnswers);
             const scope = {
                 description,
                 category,
@@ -18031,8 +18028,9 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                 v1Features,
                 futureFeatures,
                 keyDecisions,
-                startingStandards,
+                startingStandards: autoStandards,
                 scopedAt: new Date().toISOString(),
+                scopedBy: config?.ownerName || 'Owner',
                 source: 'manual'
             };
             onSave(scope);
@@ -18046,8 +18044,15 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                 return (
                     <label key={q.id} className="flex items-center justify-between p-3 bg-slate-700/50 rounded-lg hover:bg-slate-700 cursor-pointer">
                         <div className="flex-1 pr-4">
-                            <div className="text-sm font-medium">{q.label}</div>
-                            <div className="text-xs text-slate-400 mt-0.5">{q.drives}</div>
+                            <div className="text-sm font-medium flex items-center gap-1.5">
+                                {q.label}
+                                {q.drives && (
+                                    <span className="relative group inline-flex">
+                                        <span className="text-slate-500 hover:text-slate-300 cursor-help text-xs">ⓘ</span>
+                                        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 bg-slate-900 border border-slate-600 rounded text-[11px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10 shadow-lg">{q.drives}</span>
+                                    </span>
+                                )}
+                            </div>
                         </div>
                         <div className="relative">
                             <input type="checkbox" className="sr-only" checked={!!value}
@@ -18063,12 +18068,25 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
             if (q.type === 'select') {
                 return (
                     <div key={q.id} className="p-3 bg-slate-700/50 rounded-lg">
-                        <div className="text-sm font-medium mb-1">{q.label}</div>
-                        <div className="text-xs text-slate-400 mb-2">{q.drives}</div>
-                        <select value={value || q.default}
-                            onChange={e => setCategoryAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
+                        <div className="text-sm font-medium mb-1 flex items-center gap-1.5">
+                            {q.label}
+                            {q.drives && (
+                                <span className="relative group inline-flex">
+                                    <span className="text-slate-500 hover:text-slate-300 cursor-help text-xs">ⓘ</span>
+                                    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 bg-slate-900 border border-slate-600 rounded text-[11px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10 shadow-lg">{q.drives}</span>
+                                </span>
+                            )}
+                        </div>
+                        <select value={value !== undefined ? value : q.default}
+                            onChange={e => {
+                                let val = e.target.value;
+                                // Handle boolean selects (multiItem)
+                                if (val === 'true') val = true;
+                                if (val === 'false') val = false;
+                                setCategoryAnswers(prev => ({ ...prev, [q.id]: val }));
+                            }}
                             className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-sm">
-                            {q.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                            {q.options.map((opt, oi) => <option key={String(opt)} value={opt}>{q.optionLabels?.[oi] || opt}</option>)}
                         </select>
                     </div>
                 );
@@ -18078,10 +18096,17 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                 const selected = value || q.default || [];
                 return (
                     <div key={q.id} className="p-3 bg-slate-700/50 rounded-lg">
-                        <div className="text-sm font-medium mb-1">{q.label}</div>
-                        <div className="text-xs text-slate-400 mb-2">{q.drives}</div>
+                        <div className="text-sm font-medium mb-1 flex items-center gap-1.5">
+                            {q.label}
+                            {q.drives && (
+                                <span className="relative group inline-flex">
+                                    <span className="text-slate-500 hover:text-slate-300 cursor-help text-xs">ⓘ</span>
+                                    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 bg-slate-900 border border-slate-600 rounded text-[11px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10 shadow-lg">{q.drives}</span>
+                                </span>
+                            )}
+                        </div>
                         <div className="flex flex-wrap gap-2">
-                            {q.options.map(opt => (
+                            {q.options.map((opt, oi) => (
                                 <button key={opt}
                                     onClick={() => {
                                         const next = selected.includes(opt) ? selected.filter(s => s !== opt) : [...selected, opt];
@@ -18090,7 +18115,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                                     className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
                                         selected.includes(opt) ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-600'
                                     }`}>
-                                    {opt}
+                                    {q.optionLabels?.[oi] || opt}
                                 </button>
                             ))}
                         </div>
@@ -18101,8 +18126,15 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
             if (q.type === 'text') {
                 return (
                     <div key={q.id} className="p-3 bg-slate-700/50 rounded-lg">
-                        <div className="text-sm font-medium mb-1">{q.label}</div>
-                        <div className="text-xs text-slate-400 mb-2">{q.drives}</div>
+                        <div className="text-sm font-medium mb-1 flex items-center gap-1.5">
+                            {q.label}
+                            {q.drives && (
+                                <span className="relative group inline-flex">
+                                    <span className="text-slate-500 hover:text-slate-300 cursor-help text-xs">ⓘ</span>
+                                    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 bg-slate-900 border border-slate-600 rounded text-[11px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10 shadow-lg">{q.drives}</span>
+                                </span>
+                            )}
+                        </div>
                         <input value={value || ''}
                             onChange={e => setCategoryAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
                             placeholder={q.placeholder}
@@ -18123,7 +18155,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                             <h2 className="text-lg font-bold flex items-center gap-2">
                                 🎯 Project Scoping {app?.name ? `— ${app.icon || ''} ${app.name}` : ''}
                             </h2>
-                            <p className="text-xs text-slate-400 mt-1">Capture project intent → auto-generate work items & standards</p>
+                            <p className="text-xs text-slate-400 mt-1">Define what to build → get a prioritized feature list and work items ready for Claude.</p>
                         </div>
                         <button onClick={onCancel} className="text-slate-400 hover:text-white text-xl">✕</button>
                     </div>
@@ -18133,8 +18165,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                         {[
                             { n: 1, label: 'Describe' },
                             { n: 2, label: 'Clarify' },
-                            { n: 3, label: 'Features' },
-                            { n: 4, label: 'Standards' }
+                            { n: 3, label: 'Features' }
                         ].map((s, i) => (
                             <React.Fragment key={s.n}>
                                 <button onClick={() => { if (s.n < step) setStep(s.n); }}
@@ -18143,7 +18174,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                                     }`}>
                                     {step > s.n ? '✓' : s.n} {s.label}
                                 </button>
-                                {i < 3 && <div className={`flex-1 h-px ${step > s.n ? 'bg-green-600' : 'bg-slate-700'}`} />}
+                                {i < 2 && <div className={`flex-1 h-px ${step > s.n ? 'bg-green-600' : 'bg-slate-700'}`} />}
                             </React.Fragment>
                         ))}
                     </div>
@@ -18188,7 +18219,6 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                                 <div className="flex items-center gap-2 mb-4">
                                     <span className="text-xl">{SCOPE_CATEGORIES[category]?.icon}</span>
                                     <h3 className="font-semibold">{SCOPE_CATEGORIES[category]?.label} Questions</h3>
-                                    <span className="text-xs text-slate-400">— these drive feature pre-population & starting standards</span>
                                 </div>
                                 <div className="space-y-2">
                                     {(CATEGORY_QUESTIONS[category] || []).map(q => renderQuestion(q))}
@@ -18199,10 +18229,10 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                         {/* Step 3: Features */}
                         {step === 3 && (
                             <div className="space-y-6">
-                                {/* V1 Features */}
+                                {/* Launch Features */}
                                 <div>
                                     <h3 className="font-semibold text-sm mb-2 flex items-center gap-2">
-                                        🎯 V1 Features <span className="text-xs font-normal text-slate-400">core — must ship</span>
+                                        🎯 Launch Features <span className="text-xs font-normal text-slate-400">must ship</span>
                                         <span className="text-xs px-2 py-0.5 bg-slate-700 rounded-full">{v1Features.length}</span>
                                     </h3>
                                     <div className="space-y-2 mb-3">
@@ -18219,9 +18249,9 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                                                     <div className="flex items-center gap-2 shrink-0">
                                                         <select value={f.priority} onChange={e => updateV1Feature(idx, 'priority', e.target.value)}
                                                             className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
-                                                            <option value="core">Core</option>
+                                                            <option value="core">Must have</option>
                                                             <option value="nice-to-have">Nice to have</option>
-                                                            <option value="out-of-scope">Out of scope</option>
+                                                            <option value="out-of-scope">Not now</option>
                                                         </select>
                                                         <select value={f.effort} onChange={e => updateV1Feature(idx, 'effort', e.target.value)}
                                                             className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
@@ -18302,89 +18332,6 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                                 </div>
                             </div>
                         )}
-                        
-                        {/* Step 4: Starting Standards */}
-                        {step === 4 && (
-                            <div className="space-y-5">
-                                {/* Universal Standards */}
-                                <div>
-                                    <h3 className="font-semibold text-sm mb-2 flex items-center gap-2">
-                                        🌐 Universal Standards <span className="text-xs font-normal text-slate-400">always recommended</span>
-                                    </h3>
-                                    <div className="space-y-1">
-                                        {UNIVERSAL_STANDARDS.map(s => (
-                                            <label key={s.id} className="flex items-center gap-3 p-2 rounded hover:bg-slate-700/50 cursor-pointer">
-                                                <input type="checkbox" checked={startingStandards.includes(s.id)}
-                                                    onChange={() => toggleStandard(s.id)} className="rounded" />
-                                                <span className="text-sm">{s.label}</span>
-                                            </label>
-                                        ))}
-                                    </div>
-                                </div>
-                                
-                                {/* Category Standards */}
-                                {(() => {
-                                    const applicableStandards = Object.entries(CATEGORY_STANDARDS)
-                                        .filter(([_, spec]) => spec.condition(category, categoryAnswers));
-                                    
-                                    if (applicableStandards.length === 0) return null;
-                                    
-                                    // Group by group
-                                    const groups = {};
-                                    applicableStandards.forEach(([id, spec]) => {
-                                        const g = spec.group;
-                                        if (!groups[g]) groups[g] = [];
-                                        groups[g].push({ id, ...spec });
-                                    });
-                                    
-                                    const groupLabels = {
-                                        game: '🎮 Game', tool: '🔧 Tool', dashboard: '📊 Dashboard', 
-                                        content: '📄 Content', admin: '🔐 Admin', firebase: '🔥 Firebase'
-                                    };
-                                    
-                                    return Object.entries(groups).map(([groupId, items]) => (
-                                        <div key={groupId}>
-                                            <h3 className="font-semibold text-sm mb-2">
-                                                {groupLabels[groupId] || groupId} Standards
-                                            </h3>
-                                            <div className="space-y-1">
-                                                {items.map(s => (
-                                                    <label key={s.id} className="flex items-center gap-3 p-2 rounded hover:bg-slate-700/50 cursor-pointer">
-                                                        <input type="checkbox" checked={startingStandards.includes(s.id)}
-                                                            onChange={() => toggleStandard(s.id)} className="rounded" />
-                                                        <span className="text-sm">{s.label}</span>
-                                                    </label>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    ));
-                                })()}
-                                
-                                {/* Summary */}
-                                <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-700">
-                                    <div className="text-sm font-medium mb-2">📊 Scope Summary</div>
-                                    <div className="grid grid-cols-3 gap-4 text-xs">
-                                        <div>
-                                            <div className="text-slate-400">Category</div>
-                                            <div className="font-medium">{SCOPE_CATEGORIES[category]?.icon} {SCOPE_CATEGORIES[category]?.label}</div>
-                                        </div>
-                                        <div>
-                                            <div className="text-slate-400">V1 Features</div>
-                                            <div className="font-medium">{v1Features.filter(f => f.priority === 'core').length} core, {v1Features.filter(f => f.priority === 'nice-to-have').length} nice-to-have</div>
-                                        </div>
-                                        <div>
-                                            <div className="text-slate-400">Standards</div>
-                                            <div className="font-medium">{startingStandards.length} selected</div>
-                                        </div>
-                                    </div>
-                                    {keyDecisions.length > 0 && (
-                                        <div className="mt-2 text-xs text-amber-400">
-                                            ⚠️ {keyDecisions.filter(d => !d.resolved).length} unresolved decisions
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
                     </div>
                     
                     {/* Footer */}
@@ -18395,17 +18342,16 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                         </button>
                         
                         <div className="flex items-center gap-3">
-                            {step === 4 && (
+                            {step === 3 && (
                                 <span className="text-xs text-slate-400">
                                     Will generate {v1Features.length + futureFeatures.length + keyDecisions.length} work items
                                 </span>
                             )}
                             
-                            {step < 4 ? (
+                            {step < 3 ? (
                                 <button onClick={() => {
                                         if (step === 1) { if (!description.trim() || !category) return; setStep(2); }
                                         else if (step === 2) handleStep2Next();
-                                        else if (step === 3) handleStep3Next();
                                     }}
                                     disabled={step === 1 && (!description.trim() || !category)}
                                     className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-sm font-medium transition-colors">
@@ -18492,9 +18438,8 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         ];
         
         const priorityOptions = [
-            { value: 'core', label: 'Core', color: 'bg-red-900/50 text-red-300' },
-            { value: 'nice-to-have', label: 'Nice to Have', color: 'bg-amber-900/50 text-amber-300' },
-            { value: 'out-of-scope', label: 'Out of Scope', color: 'bg-slate-700 text-slate-400' }
+            { value: 'core', label: 'Must Have', color: 'bg-red-900/50 text-red-300' },
+            { value: 'nice-to-have', label: 'Nice to Have', color: 'bg-amber-900/50 text-amber-300' }
         ];
         
         const statusOptions = [
@@ -18507,7 +18452,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         
         const effortOptions = [
             { value: 'quick', label: '⚡ Quick (<30 min)' },
-            { value: 'session', label: '🕐 Session (1-2 hrs)' },
+            { value: 'session', label: '🕐 Session (1–2 hrs, one Claude chat)' },
             { value: 'multi-session', label: '📅 Multi-Session' },
             { value: 'epic', label: '🏔️ Epic' }
         ];
@@ -18584,7 +18529,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                         
                         {/* Acceptance Criteria */}
                         <div className="mb-4">
-                            <label className="text-xs text-slate-400 block mb-1">Acceptance Criteria</label>
+                            <label className="text-xs text-slate-400 block mb-1">Acceptance Criteria <span className="text-slate-600">— describe what a user should experience</span></label>
                             {formData.criteria.length > 0 && (
                                 <div className="space-y-1 mb-2">
                                     {formData.criteria.map((c, i) => (
@@ -18599,7 +18544,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                             <div className="flex gap-2">
                                 <input value={newCriterion} onChange={e => setNewCriterion(e.target.value)}
                                     onKeyDown={e => e.key === 'Enter' && addCriterion()}
-                                    placeholder="Add acceptance criterion..."
+                                    placeholder="What should a user see or be able to do? e.g. 'Score updates immediately after each guess, displayed as ★ 450'"
                                     className="flex-1 bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm" />
                                 <button onClick={addCriterion} className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded text-sm">+</button>
                             </div>
@@ -18693,7 +18638,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         );
     }
     
-    function BacklogView({ apps, showAlert, showConfirm, showPrompt, setView }) {
+    function BacklogView({ apps, showAlert, showConfirm, showPrompt, setView, config }) {
         const [workItems, setWorkItems] = React.useState([]);
         const [firebaseUser, setFirebaseUser] = React.useState(null);
         const [loading, setLoading] = React.useState(true);
@@ -19012,7 +18957,8 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 'nice-to-have': 'bg-amber-900/30 text-amber-300 border border-amber-800/50',
                 'out-of-scope': 'bg-slate-700/50 text-slate-400 border border-slate-600'
             };
-            return <span className={`px-2 py-0.5 rounded text-xs ${styles[priority] || ''}`}>{priority}</span>;
+            const labels = { 'core': 'Must have', 'nice-to-have': 'Nice to have', 'out-of-scope': 'Not now' };
+            return <span className={`px-2 py-0.5 rounded text-xs ${styles[priority] || ''}`}>{labels[priority] || priority}</span>;
         };
         
         const EffortBadge = ({ effort }) => {
@@ -19296,6 +19242,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                         onSave={handleScopeSave}
                         onCancel={() => setShowScopeModal(null)}
                         showAlert={showAlert}
+                        config={config}
                     />
                 )}
             </div>
@@ -23303,8 +23250,8 @@ ${repoStr || '- *No repos configured*'}
     }
     
     function ClaudePrepModal({ app, config, github, githubOwner, deployments, onClose, showAlert, globalWorkItems, firebaseUid }) {
-        // === Wizard State (Phase 2.2: 4-step Session Wizard) ===
-        const [wizardStep, setWizardStep] = React.useState(1); // 1: Work Items, 2: Session Type, 3: Context Budget, 4: Generate+Download
+        // === Wizard State (v8.37.0: 3-step Session Wizard) ===
+        const [wizardStep, setWizardStep] = React.useState(1); // 1: Work Items, 2: Session Type + Context, 3: Generate
         const [phase, setPhase] = React.useState('wizard'); // wizard | building | done | error
         const [sessionType, setSessionType] = React.useState(null);
         const [selectedWorkItems, setSelectedWorkItems] = React.useState([]);
@@ -23349,11 +23296,10 @@ ${repoStr || '- *No repos configured*'}
         const canProceed = (step) => {
             if (step === 1) return true; // Can always proceed from step 1 (general session is fine)
             if (step === 2) return true; // Session type is optional
-            if (step === 3) return true; // Budget review is informational
             return false;
         };
         
-        const goNext = () => setWizardStep(prev => Math.min(prev + 1, 4));
+        const goNext = () => setWizardStep(prev => Math.min(prev + 1, 3));
         const goBack = () => setWizardStep(prev => Math.max(prev - 1, 1));
         
         // Quick Skip: jump to building immediately
@@ -23718,8 +23664,7 @@ ${repoStr || '- *No repos configured*'}
         const WIZARD_STEPS = [
             { num: 1, label: 'Work Items', icon: '\ud83d\udccb' },
             { num: 2, label: 'Session Type', icon: '\ud83c\udfaf' },
-            { num: 3, label: 'Context Budget', icon: '\ud83e\uddee' },
-            { num: 4, label: 'Generate', icon: '\ud83d\udce6' }
+            { num: 3, label: 'Generate', icon: '\ud83d\udce6' }
         ];
         
         // === RENDER ===
@@ -23770,9 +23715,47 @@ ${repoStr || '- *No repos configured*'}
                     
                     {/* === STEP 1: Work Items === */}
                     {phase === 'wizard' && wizardStep === 1 && (
+                        appWorkItems.length === 0 ? (
+                            /* Quick Build Bypass: 0 work items → one-screen summary */
+                            <div className="flex-1 overflow-y-auto p-5 min-h-0 space-y-4">
+                                <div className="text-sm font-medium text-slate-300 mb-1">Quick Build</div>
+                                <div className="text-xs text-slate-500 mb-3">No open work items — this will generate a general session package.</div>
+                                
+                                <div className="bg-slate-900/50 rounded-lg p-4 space-y-3 text-xs">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-slate-500">App</span>
+                                        <span className="text-slate-300 flex items-center gap-1.5"><AppIcon icon={app.icon} size={14} /> {app.name}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-slate-500">Session Type</span>
+                                        <span className="text-slate-300">General (no targeted items)</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-slate-500">Engine</span>
+                                        <span className="text-slate-300">{activeEngine?.name || 'Default'}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-slate-500">Source Files</span>
+                                        <span className="text-slate-300">Included</span>
+                                    </div>
+                                </div>
+                                
+                                <div className="bg-green-900/15 border border-green-800/30 rounded-lg p-3 text-xs text-green-300 flex items-center gap-2">
+                                    <span className="text-green-400">\u2713</span>
+                                    <span>Package fits — Claude will see everything needed.</span>
+                                </div>
+                                
+                                <div className="pt-2">
+                                    <button onClick={quickBuild}
+                                        className="w-full py-3 bg-purple-600 hover:bg-purple-500 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-colors">
+                                        \ud83d\udce6 Generate Package
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
                         <div className="flex-1 overflow-y-auto p-5 min-h-0 space-y-4">
                             <div className="text-sm font-medium text-slate-300 mb-1">What are you working on?</div>
-                            <div className="text-xs text-slate-500 mb-3">Select work items to target, or skip for a general session.</div>
+                            <div className="text-xs text-slate-500 mb-3">Build a Claude briefing package. Select work items to focus on, or skip for a general session.</div>
                             
                             {appWorkItems.length > 0 ? (
                                 <div className="space-y-1.5 max-h-64 overflow-y-auto">
@@ -23820,16 +23803,17 @@ ${repoStr || '- *No repos configured*'}
                                 </div>
                             )}
                         </div>
+                        )
                     )}
                     
-                    {/* === STEP 2: Session Type === */}
+                    {/* === STEP 2: Session Type + Context Preview === */}
                     {phase === 'wizard' && wizardStep === 2 && (
                         <div className="flex-1 overflow-y-auto p-5 min-h-0 space-y-4">
                             <div className="text-sm font-medium text-slate-300 mb-1">Session Type</div>
                             <div className="text-xs text-slate-500 mb-3">
                                 {selectedWorkItems.length > 0 && sessionType 
-                                    ? `Auto-suggested from work item type. Override if needed.` 
-                                    : 'Choose what kind of work you\'ll be doing.'}
+                                    ? `Auto-suggested from work item type. This determines how Claude approaches the work and what context it receives.` 
+                                    : 'Choose what kind of work you\'ll be doing. This shapes Claude\'s approach and the files included.'}
                             </div>
                             
                             <div className="grid grid-cols-4 gap-1.5">
@@ -23871,82 +23855,68 @@ ${repoStr || '- *No repos configured*'}
                                     </div>
                                 </div>
                             )}
-                        </div>
-                    )}
-                    
-                    {/* === STEP 3: Context Budget === */}
-                    {phase === 'wizard' && wizardStep === 3 && (
-                        <div className="flex-1 overflow-y-auto p-5 min-h-0 space-y-4">
-                            <div className="text-sm font-medium text-slate-300 mb-1">Context Budget Preview</div>
-                            <div className="text-xs text-slate-500 mb-3">
-                                Review what will be included in your session package based on {typeInfo ? `${typeInfo.icon} ${typeInfo.label}` : 'default'} context strategy.
+                            
+                            {/* Context confidence indicator (replaces old Step 3) */}
+                            <div className="bg-green-900/15 border border-green-800/30 rounded-lg p-3 text-xs text-green-300 flex items-center gap-2">
+                                <span className="text-green-400">\u2713</span>
+                                <span>Package fits — Claude will see everything needed for this session.</span>
                             </div>
                             
-                            {/* Engine info */}
-                            <div className="bg-slate-900/50 rounded-lg p-3 text-xs">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-slate-400 font-medium">{activeEngine?.name || 'Default Engine'}</span>
-                                    <span className="text-slate-500">{TokenRegistryService.formatTokens(activeEngine?.contextWindow || 200000)} context window</span>
+                            {/* Collapsible: What Claude will see */}
+                            <details className="group">
+                                <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300 transition-colors select-none flex items-center gap-1">
+                                    <span className="text-[10px] group-open:rotate-90 transition-transform inline-block">\u25b6</span>
+                                    What Claude will see
+                                </summary>
+                                <div className="mt-2 space-y-2">
+                                    {typeInfo ? (
+                                        <div className="space-y-1">
+                                            {typeInfo.contextStrategy.includeSource && (
+                                                <div className="flex items-center gap-2 px-3 py-1.5 bg-green-900/20 rounded text-xs">
+                                                    <span className="text-green-400">\u2713</span>
+                                                    <span className="text-green-300 font-mono">{app.targetPath || 'index.html'}</span>
+                                                    <span className="text-green-600 ml-auto">source</span>
+                                                </div>
+                                            )}
+                                            {!typeInfo.contextStrategy.includeSource && (
+                                                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded text-xs">
+                                                    <span className="text-slate-600">\u2212</span>
+                                                    <span className="text-slate-500 font-mono line-through">{app.targetPath || 'index.html'}</span>
+                                                    <span className="text-amber-600 ml-auto">skipped</span>
+                                                </div>
+                                            )}
+                                            {typeInfo.contextStrategy.alwaysInclude.map(f => (
+                                                <div key={f} className="flex items-center gap-2 px-3 py-1.5 bg-green-900/20 rounded text-xs">
+                                                    <span className="text-green-400">\u2713</span>
+                                                    <span className="text-green-300 font-mono">{f}</span>
+                                                    <span className="text-green-600 ml-auto">always</span>
+                                                </div>
+                                            ))}
+                                            {typeInfo.contextStrategy.preferInclude.map(f => (
+                                                <div key={f} className="flex items-center gap-2 px-3 py-1.5 bg-slate-700/50 rounded text-xs">
+                                                    <span className="text-slate-400">+</span>
+                                                    <span className="text-slate-300 font-mono">{f}</span>
+                                                    <span className="text-slate-500 ml-auto">preferred</span>
+                                                </div>
+                                            ))}
+                                            {typeInfo.contextStrategy.skipWhenTight.map(f => (
+                                                <div key={f} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded text-xs">
+                                                    <span className="text-slate-600">\u2212</span>
+                                                    <span className="text-slate-500 font-mono">{f}</span>
+                                                    <span className="text-slate-600 ml-auto">skipped</span>
+                                                </div>
+                                            ))}
+                                            <div className="text-xs text-slate-500 mt-2">
+                                                + SESSION_BRIEF.md (auto-generated) + any extra .md/.txt files found in repo
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="bg-slate-900/30 rounded-lg p-3 text-xs text-slate-500">
+                                            All standard docs + source files will be included. Select a session type above to optimize file selection.
+                                        </div>
+                                    )}
                                 </div>
-                                <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                                    <div className="h-full bg-slate-600 rounded-full" style={{ width: '0%' }} />
-                                </div>
-                                <div className="text-[10px] text-slate-600 mt-1">Actual token usage will be calculated during package generation</div>
-                            </div>
-                            
-                            {/* Context Strategy */}
-                            {typeInfo ? (
-                                <div className="space-y-2">
-                                    <div className="text-xs text-slate-400 font-medium">\ud83d\udce6 Files included by {typeInfo.icon} {typeInfo.label} strategy:</div>
-                                    
-                                    <div className="space-y-1">
-                                        {typeInfo.contextStrategy.includeSource && (
-                                            <div className="flex items-center gap-2 px-3 py-1.5 bg-green-900/20 rounded text-xs">
-                                                <span className="text-green-400">\u2713</span>
-                                                <span className="text-green-300 font-mono">{app.targetPath || 'index.html'}</span>
-                                                <span className="text-green-600 ml-auto">source</span>
-                                            </div>
-                                        )}
-                                        {!typeInfo.contextStrategy.includeSource && (
-                                            <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded text-xs">
-                                                <span className="text-slate-600">\u2212</span>
-                                                <span className="text-slate-500 font-mono line-through">{app.targetPath || 'index.html'}</span>
-                                                <span className="text-amber-600 ml-auto">skipped</span>
-                                            </div>
-                                        )}
-                                        {typeInfo.contextStrategy.alwaysInclude.map(f => (
-                                            <div key={f} className="flex items-center gap-2 px-3 py-1.5 bg-green-900/20 rounded text-xs">
-                                                <span className="text-green-400">\u2713</span>
-                                                <span className="text-green-300 font-mono">{f}</span>
-                                                <span className="text-green-600 ml-auto">always</span>
-                                            </div>
-                                        ))}
-                                        {typeInfo.contextStrategy.preferInclude.map(f => (
-                                            <div key={f} className="flex items-center gap-2 px-3 py-1.5 bg-slate-700/50 rounded text-xs">
-                                                <span className="text-slate-400">+</span>
-                                                <span className="text-slate-300 font-mono">{f}</span>
-                                                <span className="text-slate-500 ml-auto">preferred</span>
-                                            </div>
-                                        ))}
-                                        {typeInfo.contextStrategy.skipWhenTight.map(f => (
-                                            <div key={f} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded text-xs">
-                                                <span className="text-slate-600">\u2212</span>
-                                                <span className="text-slate-500 font-mono">{f}</span>
-                                                <span className="text-slate-600 ml-auto">skipped</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    
-                                    <div className="text-xs text-slate-500 mt-2">
-                                        + SESSION_BRIEF.md (auto-generated) + any extra .md/.txt files found in repo
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="bg-slate-900/30 rounded-lg p-3 text-xs text-slate-500">
-                                    <div className="font-medium text-slate-400 mb-1">\ud83d\udce6 Default strategy (no session type):</div>
-                                    All standard docs + source files will be included. Select a session type in Step 2 to optimize file selection.
-                                </div>
-                            )}
+                            </details>
                             
                             {/* Work item context note */}
                             {selectedWorkItems.length > 0 && (
@@ -23957,11 +23927,11 @@ ${repoStr || '- *No repos configured*'}
                         </div>
                     )}
                     
-                    {/* === STEP 4: Generate (in wizard — shows summary before building) === */}
-                    {phase === 'wizard' && wizardStep === 4 && (
+                    {/* === STEP 3: Generate (summary before building) === */}
+                    {phase === 'wizard' && wizardStep === 3 && (
                         <div className="flex-1 overflow-y-auto p-5 min-h-0 space-y-4">
                             <div className="text-sm font-medium text-slate-300 mb-1">Ready to Generate</div>
-                            <div className="text-xs text-slate-500 mb-3">Review your session configuration and generate the package.</div>
+                            <div className="text-xs text-slate-500 mb-3">Generate a zip package with source, docs, and a session brief to upload to Claude.</div>
                             
                             {/* Summary */}
                             <div className="bg-slate-900/50 rounded-lg p-4 space-y-3 text-xs">
@@ -24000,13 +23970,13 @@ ${repoStr || '- *No repos configured*'}
                                         \u2190 Back
                                     </button>
                                 )}
-                                {wizardStep < 4 && (
+                                {wizardStep < 3 && (
                                     <button onClick={goNext}
                                         className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 rounded-lg font-medium text-sm transition-colors">
                                         Next \u2192
                                     </button>
                                 )}
-                                {wizardStep === 4 && (
+                                {wizardStep === 3 && (
                                     <button onClick={startPrep}
                                         className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-colors">
                                         \ud83d\udce6 Generate Package{sessionType ? ` (${SESSION_TYPES[sessionType].icon} ${SESSION_TYPES[sessionType].label})` : ''}
@@ -24437,6 +24407,7 @@ ${repoStr || '- *No repos configured*'}
 
                 // v8.28.0: Auto-create work items from scope
                 let createdItems = [];
+                const ownerName = config?.ownerName || 'Owner';
                 if (scopeData && firebaseUid) {
                     const itemsToCreate = [];
                     let nextNum = 1;
@@ -24454,6 +24425,7 @@ ${repoStr || '- *No repos configured*'}
                             status: 'ready',
                             effort: f.effort || 'session',
                             source: 'scoped',
+                            createdBy: ownerName,
                             tags: ['v1', scopeData.category || '']
                         });
                     });
@@ -24470,6 +24442,7 @@ ${repoStr || '- *No repos configured*'}
                             status: 'idea',
                             effort: f.effort || 'session',
                             source: 'scoped',
+                            createdBy: ownerName,
                             tags: ['future']
                         });
                     });
@@ -24486,6 +24459,7 @@ ${repoStr || '- *No repos configured*'}
                             status: 'ready',
                             effort: 'quick',
                             source: 'scoped',
+                            createdBy: ownerName,
                             tags: ['decision']
                         });
                     });
@@ -25032,6 +25006,7 @@ The developer uses Claude for iterative development — each session should:
                                 onSave={(scope) => { setScopeData(scope); setShowScopeInline(false); }}
                                 onCancel={() => setShowScopeInline(false)}
                                 showAlert={showAlert}
+                                config={config}
                             />
                         )}
                     </div>
@@ -26095,7 +26070,7 @@ The developer uses Claude for iterative development — each session should:
     // SETTINGS VIEW
     // =========================================================================
     
-    function SettingsView({ token, setToken, settings, setSettings, repoCount, syncStatus, onForceSync }) {
+    function SettingsView({ token, setToken, settings, setSettings, repoCount, syncStatus, onForceSync, config, onConfigChange }) {
         const [show, setShow] = React.useState(false);
         const [testing, setTesting] = React.useState(false);
         const [result, setResult] = React.useState(null);
@@ -26213,6 +26188,29 @@ The developer uses Claude for iterative development — each session should:
         
         return (
             <div className="space-y-6">
+                {/* Your Name (v8.37.0) */}
+                <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
+                    <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
+                        👤 Your Name
+                    </h2>
+                    <p className="text-sm text-slate-400 mb-3">
+                        Used to attribute work items, deploys, and session activity. Leave blank to use "Owner".
+                    </p>
+                    <input 
+                        type="text" 
+                        value={config?.ownerName || ''} 
+                        onChange={e => {
+                            if (onConfigChange) {
+                                onConfigChange({ ...config, ownerName: e.target.value });
+                            }
+                        }}
+                        placeholder="e.g. Dave"
+                        className="w-full max-w-xs p-2 bg-slate-700 border border-slate-600 rounded text-sm focus:border-indigo-500 focus:outline-none" />
+                    {config?.ownerName && (
+                        <div className="mt-2 text-xs text-green-400">✓ Records will be attributed to "{config.ownerName}"</div>
+                    )}
+                </div>
+                
                 <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
                     <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
                         <Icons.GitBranch /> GitHub Token
@@ -26423,8 +26421,7 @@ The developer uses Claude for iterative development — each session should:
                                     <th className="text-center py-2 px-1 font-medium">Tier</th>
                                     <th className="text-right py-2 px-2 font-medium">Context</th>
                                     <th className="text-right py-2 px-2 font-medium">Extended</th>
-                                    <th className="text-right py-2 px-2 font-medium">$/MTok In</th>
-                                    <th className="text-right py-2 px-2 font-medium">$/MTok Out</th>
+                                    <th className="text-right py-2 px-2 font-medium">~$/Session</th>
                                     <th className="text-center py-2 px-1 font-medium">Projects</th>
                                     <th className="text-center py-2 px-1 font-medium">Skills</th>
                                 </tr>
@@ -26454,8 +26451,9 @@ The developer uses Claude for iterative development — each session should:
                                                     : <span className="text-slate-600">—</span>
                                                 }
                                             </td>
-                                            <td className="py-2 px-2 text-right text-slate-400 font-mono">${engine.cost.input.toFixed(2)}</td>
-                                            <td className="py-2 px-2 text-right text-slate-400 font-mono">${engine.cost.output.toFixed(2)}</td>
+                                            <td className="py-2 px-2 text-right text-slate-400 font-mono" title={`$${engine.cost.input.toFixed(2)}/$${engine.cost.output.toFixed(2)} per MTok`}>
+                                                ~${(EngineRegistryService.estimateSessionCost(50000, 10000, engine.id)?.totalCost || 0).toFixed(2)}
+                                            </td>
                                             <td className="py-2 px-1 text-center">{engine.features.projects ? <span className="text-green-400">✓</span> : <span className="text-slate-600">—</span>}</td>
                                             <td className="py-2 px-1 text-center">{engine.features.skills ? <span className="text-green-400">✓</span> : <span className="text-slate-600">—</span>}</td>
                                         </tr>
