@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.29.0">
+    <meta name="version" content="8.29.1">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -266,9 +266,7 @@
         async getRules() {
             const token = await this.getAccessToken();
             const dbUrl = FIREBASE_CONFIG.databaseURL;
-            const response = await fetch(`${dbUrl}/.settings/rules.json`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
+            const response = await fetch(`${dbUrl}/.settings/rules.json?access_token=${encodeURIComponent(token)}`);
             if (!response.ok) {
                 const err = await response.text();
                 throw new Error(`Failed to fetch rules: ${response.status} — ${err}`);
@@ -281,9 +279,8 @@
             const token = await this.getAccessToken();
             const dbUrl = FIREBASE_CONFIG.databaseURL;
             const body = typeof rules === 'string' ? rules : JSON.stringify(rules);
-            const response = await fetch(`${dbUrl}/.settings/rules.json`, {
+            const response = await fetch(`${dbUrl}/.settings/rules.json?access_token=${encodeURIComponent(token)}`, {
                 method: 'PUT',
-                headers: { 'Authorization': `Bearer ${token}` },
                 body: body
             });
             if (!response.ok) {
