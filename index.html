@@ -5509,7 +5509,19 @@
             console.log('=== REFRESHING VERSIONS FROM REPOS ===');
             
             const updates = {};
+            
+            // Build project→repo map for inheritance (same logic as resolveZipContents)
+            const projectRepos = {};
+            for (const [id, a] of Object.entries(currentApps)) {
+                const repo = a.prodRepo || a.testRepo;
+                if (repo && a.project) projectRepos[a.project] = repo;
+            }
+            
             for (const [appId, app] of Object.entries(currentApps)) {
+                // Inherit repo from project siblings if app doesn't have one
+                const effectiveTestRepo = app.testRepo || (app.project ? projectRepos[app.project] : '') || '';
+                const effectiveProdRepo = app.prodRepo || (app.project ? projectRepos[app.project] : '') || '';
+                
                 // Ensure subPath is set from defaults (localStorage may have empty string from old config)
                 const effectiveSubPath = app.subPath || '';
                 const appWithSubPath = { ...app, subPath: effectiveSubPath };
@@ -5517,10 +5529,10 @@
                 // Get the full path including subPath if set
                 const fullTargetPath = getRepoFilePath(appWithSubPath, app.targetPath);
                 
-                if (app.testRepo) {
+                if (effectiveTestRepo) {
                     try {
-                        console.log(`[${appId}] Fetching TEST from ${app.testRepo}/${fullTargetPath}...`);
-                        const testFileData = await github.getFileContent(app.testRepo, fullTargetPath);
+                        console.log(`[${appId}] Fetching TEST from ${effectiveTestRepo}/${fullTargetPath}...`);
+                        const testFileData = await github.getFileContent(effectiveTestRepo, fullTargetPath);
                         if (testFileData) {
                             // Use textContent which handles both normal and large files
                             const content = testFileData.textContent;
@@ -5535,10 +5547,10 @@
                         console.error(`[${appId}] TEST error:`, e.message);
                     }
                 }
-                if (app.prodRepo) {
+                if (effectiveProdRepo) {
                     try {
-                        console.log(`[${appId}] Fetching PROD from ${app.prodRepo}/${fullTargetPath}...`);
-                        const prodFileData = await github.getFileContent(app.prodRepo, fullTargetPath);
+                        console.log(`[${appId}] Fetching PROD from ${effectiveProdRepo}/${fullTargetPath}...`);
+                        const prodFileData = await github.getFileContent(effectiveProdRepo, fullTargetPath);
                         if (prodFileData) {
                             // Use textContent which handles both normal and large files
                             const content = prodFileData.textContent;
@@ -9169,6 +9181,18 @@
                                                     await onBatchDeploy(batchFiles, primaryAppId, batch.target);
                                                 } else if (batchFiles.length === 1) {
                                                     await onDeploy(batchFiles[0], primaryAppId, batch.target);
+                                                }
+                                                
+                                                // Update versions for ALL apps in this batch, not just primary
+                                                const versionKey = batch.target === 'prod' ? 'currentProdVersion' : 'currentTestVersion';
+                                                const batchAppIds = [...new Set(batch.files.map(f => f.suggestedApp).filter(id => id && id !== '_shared'))];
+                                                for (const batchAppId of batchAppIds) {
+                                                    if (batchAppId === primaryAppId) continue; // primary already updated by handleBatchDeploy
+                                                    const appVersion = appGroups[batchAppId]?.version;
+                                                    if (appVersion) {
+                                                        updateApp(batchAppId, { [versionKey]: appVersion, updatedAt: Date.now() });
+                                                        console.log(`[SmartDeploy] Updated ${batchAppId} ${versionKey}: ${appVersion}`);
+                                                    }
                                                 }
                                             }
                                         }}
