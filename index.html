@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.43.0">
+    <meta name="version" content="8.44.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2037,6 +2037,216 @@
     };
     
     /**
+     * DependencyAlertService — Auto-remediation alerts (Phase 5.4)
+     * Wraps: Firebase RTDB `command-center/{uid}/dependencyAlerts` path
+     * 
+     * When a session changes a provided interface, alerts are generated
+     * for every dependent stream. Each alert auto-creates a work item
+     * in the dependent stream with change context for prompt chaining.
+     * 
+     *   id: 'DA-NNN'
+     *   dependencyId: which dependency was affected
+     *   interfaceId: which interface changed
+     *   triggeredBySession: session ID that caused the change
+     *   triggeredByItem: work item ID that caused the change
+     *   changeDescription: what changed (user-provided)
+     *   changeNotes: detailed notes for the dependent stream's Claude session
+     *   triggeredAt: timestamp
+     *   triggeredBy: actor name
+     *   generatedItemId: auto-created work item in dependent stream
+     *   resolution: pending | updated | no_impact
+     *   resolvedBy, resolvedAt
+     */
+    const DependencyAlertService = {
+        BASE_PATH: 'command-center',
+        
+        _ref(uid) {
+            if (!firebaseDb || !uid) return null;
+            return firebaseDb.ref(`${this.BASE_PATH}/${uid}/dependencyAlerts`);
+        },
+        
+        listen(uid, callback) {
+            const ref = this._ref(uid);
+            if (!ref) return () => {};
+            
+            ref.on('value', (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    const list = Object.entries(data).map(([id, alert]) => ({ id, ...alert }));
+                    callback(list.sort((a, b) => new Date(b.triggeredAt || 0) - new Date(a.triggeredAt || 0)));
+                } else {
+                    callback([]);
+                }
+            });
+            
+            return () => ref.off();
+        },
+        
+        async create(uid, data) {
+            const ref = this._ref(uid);
+            if (!ref) return null;
+            
+            const alert = {
+                dependencyId: data.dependencyId,
+                interfaceId: data.interfaceId,
+                triggeredBySession: data.triggeredBySession || null,
+                triggeredByItem: data.triggeredByItem || null,
+                changeDescription: data.changeDescription,
+                changeNotes: data.changeNotes || '',
+                triggeredAt: new Date().toISOString(),
+                triggeredBy: data.triggeredBy || 'Owner',
+                generatedItemId: data.generatedItemId || null,
+                resolution: 'pending',
+                resolvedBy: null,
+                resolvedAt: null
+            };
+            
+            await ref.child(data.id).set(alert);
+            console.log(`[DependencyAlertService] Created ${data.id}: ${alert.changeDescription}`);
+            return { id: data.id, ...alert };
+        },
+        
+        async resolve(uid, alertId, resolution, resolvedBy) {
+            const ref = this._ref(uid);
+            if (!ref) return;
+            await ref.child(alertId).update({
+                resolution: resolution,  // 'updated' or 'no_impact'
+                resolvedBy: resolvedBy || 'Owner',
+                resolvedAt: new Date().toISOString()
+            });
+            console.log(`[DependencyAlertService] Resolved ${alertId}: ${resolution}`);
+        },
+        
+        async updateGeneratedItem(uid, alertId, itemId) {
+            const ref = this._ref(uid);
+            if (!ref) return;
+            await ref.child(alertId).update({ generatedItemId: itemId });
+        },
+        
+        async delete(uid, alertId) {
+            const ref = this._ref(uid);
+            if (!ref) return;
+            await ref.child(alertId).remove();
+        },
+        
+        // Get pending alerts for a stream (items that need attention)
+        getPendingForStream(alerts, dependencies, streamId) {
+            const streamDepIds = dependencies.filter(d => d.dependentStreamId === streamId).map(d => d.id);
+            return alerts.filter(a => a.resolution === 'pending' && streamDepIds.includes(a.dependencyId));
+        },
+        
+        // Get all pending alerts
+        getPending(alerts) {
+            return alerts.filter(a => a.resolution === 'pending');
+        },
+        
+        // Get alerts triggered by a specific session
+        getBySession(alerts, sessionId) {
+            return alerts.filter(a => a.triggeredBySession === sessionId);
+        },
+        
+        getNextId(current) {
+            const existing = current.map(a => parseInt(a.id?.replace('DA-', '') || '0'));
+            const max = Math.max(0, ...existing);
+            return `DA-${String(max + 1).padStart(3, '0')}`;
+        },
+        
+        /**
+         * triggerAlerts — Core auto-remediation flow (Phase 5.4)
+         * 
+         * Called when a user confirms an interface changed during post-session review.
+         * For each dependency on the changed interface:
+         *   1. Creates a dependency alert
+         *   2. Auto-creates a work item in the dependent stream with change context
+         *   3. Marks the dependency status as 'changed'
+         *   4. Logs to activity feed
+         * 
+         * The generated work item includes changeContext so when the dependent stream
+         * owner preps a Claude session, the session brief includes what changed and why.
+         * This is the prompt chain: session output → change context → next session input.
+         */
+        async triggerAlerts(uid, { interfaceId, changeDescription, changeNotes, sessionId, workItemId, actor, interfaces, dependencies, streams, workItems, alerts }) {
+            const iface = interfaces.find(i => i.id === interfaceId);
+            if (!iface) return [];
+            
+            // Find all dependencies that consume this interface
+            const affectedDeps = dependencies.filter(d => d.interfaceId === interfaceId);
+            if (affectedDeps.length === 0) return [];
+            
+            const providerStream = streams.find(s => s.id === iface.streamId);
+            const results = [];
+            
+            for (const dep of affectedDeps) {
+                const dependentStream = streams.find(s => s.id === dep.dependentStreamId);
+                if (!dependentStream) continue;
+                
+                // 1. Create the alert
+                const alertId = this.getNextId(alerts.concat(results.map(r => r.alert)));
+                
+                // 2. Auto-create a work item in the dependent stream
+                const itemId = WorkItemService.getNextId(workItems);
+                const workItem = await WorkItemService.create(uid, {
+                    id: itemId,
+                    appId: dependentStream.appId || iface.appId || '',
+                    streamId: dep.dependentStreamId,
+                    title: `Update: ${iface.description} changed`,
+                    description: `Interface "${iface.description}" provided by ${providerStream?.name || 'unknown stream'} has changed.\n\n**What changed:** ${changeDescription}\n\n**Why this stream is affected:** ${dep.context || 'This stream depends on this interface.'}\n\n**Change notes from source session:**\n${changeNotes || 'No additional notes.'}`,
+                    type: 'dependency_update',
+                    priority: 'core',
+                    status: 'ready',
+                    effort: 'session',
+                    criteria: [
+                        `Verify ${dependentStream.name} works correctly with the updated interface`,
+                        `Update any references to: ${iface.description}`
+                    ],
+                    context: {
+                        notes: `Auto-generated from dependency alert ${alertId}. Source session: ${sessionId || 'N/A'}.`,
+                        dependencies: [iface.description],
+                        relatedItems: workItemId ? [workItemId] : []
+                    },
+                    tags: ['dependency-update', 'auto-generated'],
+                    createdBy: actor,
+                    source: 'dependency_alert'
+                });
+                
+                // 3. Create the alert record
+                const alert = await this.create(uid, {
+                    id: alertId,
+                    dependencyId: dep.id,
+                    interfaceId: interfaceId,
+                    triggeredBySession: sessionId,
+                    triggeredByItem: workItemId,
+                    changeDescription: changeDescription,
+                    changeNotes: changeNotes,
+                    triggeredBy: actor,
+                    generatedItemId: itemId
+                });
+                
+                // 4. Mark the dependency as 'changed'
+                await DependencyService.update(uid, dep.id, { 
+                    status: 'changed',
+                    lastChangedAt: new Date().toISOString(),
+                    lastChangedBy: actor
+                });
+                
+                // 5. Log to activity feed
+                ActivityLogService.log(uid, {
+                    appId: dependentStream.appId,
+                    streamId: dep.dependentStreamId,
+                    actor: actor,
+                    action: 'dependency_alert',
+                    summary: `Dependency alert: "${iface.description}" changed — ${dependentStream.name} has update queued`,
+                    metadata: { alertId, interfaceId, dependencyId: dep.id, generatedItemId: itemId }
+                }).catch(e => console.warn('[Activity] Dependency alert log failed:', e));
+                
+                results.push({ alert, workItem, dependency: dep, dependentStream });
+            }
+            
+            return results;
+        }
+    };
+    
+    /**
      * TokenRegistryService — Token estimation and caching
      * Provides heuristic token counting for context budget management.
      * Cache stored in localStorage for instant access during Claude Prep.
@@ -3306,6 +3516,26 @@
                             brief += '\n';
                         }
                     }
+                }
+                
+                // Phase 5.4: Dependency change context (prompt chaining)
+                // If any targeted work items are dependency_update type, include the change context
+                // from the source session. This is the core prompt chain: previous session's output
+                // becomes this session's input, routed through dependency contracts.
+                const depUpdateItems = targetWorkItems.filter(wi => wi.type === 'dependency_update' || wi.source === 'dependency_alert');
+                if (depUpdateItems.length > 0) {
+                    brief += `## ⚠️ Dependency Changes — Context from Source Session\n\n`;
+                    brief += `This session addresses ${depUpdateItems.length} dependency update${depUpdateItems.length !== 1 ? 's' : ''}. `;
+                    brief += `Another stream changed an interface this stream depends on. Review the change context below before making updates.\n\n`;
+                    
+                    depUpdateItems.forEach(wi => {
+                        brief += `### ${wi.title}\n`;
+                        if (wi.description) brief += `${wi.description}\n\n`;
+                        if (wi.context?.notes) brief += `**Notes:** ${wi.context.notes}\n`;
+                        if (wi.context?.dependencies?.length) brief += `**Affected interfaces:** ${wi.context.dependencies.join(', ')}\n`;
+                        if (wi.context?.relatedItems?.length) brief += `**Source work item:** ${wi.context.relatedItems.join(', ')}\n`;
+                        brief += '\n';
+                    });
                 }
             }
             
@@ -5730,6 +5960,7 @@
         const [globalStreams, setGlobalStreams] = React.useState([]); // Phase 5.2: Work streams
         const [globalInterfaces, setGlobalInterfaces] = React.useState([]); // Phase 5.4: Stream interfaces
         const [globalDependencies, setGlobalDependencies] = React.useState([]); // Phase 5.4: Dependencies
+        const [globalDependencyAlerts, setGlobalDependencyAlerts] = React.useState([]); // Phase 5.4: Dependency alerts
         const [firebaseUid, setFirebaseUid] = React.useState(null);
         const [firebaseUser, setFirebaseUser] = React.useState(null);
         
@@ -5744,6 +5975,7 @@
             let unsubscribeStreams = () => {};
             let unsubscribeInterfaces = () => {};
             let unsubscribeDependencies = () => {};
+            let unsubscribeDependencyAlerts = () => {};
             
             const unsubscribe = firebaseAuth.onAuthStateChanged((u) => {
                 setFirebaseUser(u);
@@ -5763,6 +5995,8 @@
                     unsubscribeInterfaces = StreamInterfaceService.listen(u.uid, setGlobalInterfaces);
                     // Listen for dependencies via DependencyService (v8.43.0 — Phase 5.4)
                     unsubscribeDependencies = DependencyService.listen(u.uid, setGlobalDependencies);
+                    // Listen for dependency alerts via DependencyAlertService (v8.44.0 — Phase 5.4)
+                    unsubscribeDependencyAlerts = DependencyAlertService.listen(u.uid, setGlobalDependencyAlerts);
                 } else {
                     setFirebaseUid(null);
                     setGlobalIssues([]);
@@ -5784,6 +6018,7 @@
                 unsubscribeStreams();
                 unsubscribeInterfaces();
                 unsubscribeDependencies();
+                unsubscribeDependencyAlerts();
             };
         }, []);
         
@@ -8117,6 +8352,10 @@
                             globalWorkItems={globalWorkItems}
                             firebaseUid={firebaseUid}
                             config={config}
+                            globalStreams={globalStreams}
+                            globalInterfaces={globalInterfaces}
+                            globalDependencies={globalDependencies}
+                            globalDependencyAlerts={globalDependencyAlerts}
                         />
                     )}
                     
@@ -8133,7 +8372,7 @@
                     )}
                     
                     {view === 'streams' && (
-                        <WorkStreamsView apps={apps} config={config} globalWorkItems={globalWorkItems} globalStreams={globalStreams} globalInterfaces={globalInterfaces} globalDependencies={globalDependencies} showAlert={showAlert} showConfirm={showConfirm} showPrompt={showPrompt} setView={setView} />
+                        <WorkStreamsView apps={apps} config={config} globalWorkItems={globalWorkItems} globalStreams={globalStreams} globalInterfaces={globalInterfaces} globalDependencies={globalDependencies} globalDependencyAlerts={globalDependencyAlerts || []} showAlert={showAlert} showConfirm={showConfirm} showPrompt={showPrompt} setView={setView} />
                     )}
                     
                     {view === 'config' && (
@@ -17099,7 +17338,7 @@
     // SESSION LOG VIEW
     // =========================================================================
     
-    function SessionLogView({ apps, sessionLog, setSessionLog, deployments, github, onFileDrop, showAlert, globalSessions, globalWorkItems, firebaseUid, config }) {
+    function SessionLogView({ apps, sessionLog, setSessionLog, deployments, github, onFileDrop, showAlert, globalSessions, globalWorkItems, firebaseUid, config, globalStreams, globalInterfaces, globalDependencies, globalDependencyAlerts }) {
         const [newEntry, setNewEntry] = React.useState('');
         const [firebaseUser, setFirebaseUser] = React.useState(null);
         const [syncStatus, setSyncStatus] = React.useState('local');
@@ -17766,6 +18005,10 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                         showAlert={showAlert}
                         firebaseUid={firebaseUid}
                         config={config}
+                        streams={globalStreams || []}
+                        interfaces={globalInterfaces || []}
+                        dependencies={globalDependencies || []}
+                        dependencyAlerts={globalDependencyAlerts || []}
                     />
                 )}
             </div>
@@ -17778,13 +18021,19 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
     // Inline guided flow: Review deliverables → Check criteria → Deploy decision → Close items
     // =========================================================================
     
-    function PostSessionReviewModal({ session, workItems, app, onClose, onDeploy, showAlert, firebaseUid, config }) {
+    function PostSessionReviewModal({ session, workItems, app, onClose, onDeploy, showAlert, firebaseUid, config, streams, interfaces, dependencies, dependencyAlerts }) {
         const [step, setStep] = React.useState(1); // 1: Overview, 2: Criteria Review, 3: Deploy Decision, 4: Close Items
         const [deliverableNotes, setDeliverableNotes] = React.useState(session?.deliverables?.summary || '');
         const [criteriaResults, setCriteriaResults] = React.useState([]);
         const [reviewNotes, setReviewNotes] = React.useState('');
         const [closingItems, setClosingItems] = React.useState(new Set());
         const [saving, setSaving] = React.useState(false);
+        
+        // Phase 5.4: Interface change detection state
+        const [interfaceChanges, setInterfaceChanges] = React.useState([]); // [{interfaceId, changed: bool, description: '', notes: ''}]
+        const [alertsTriggered, setAlertsTriggered] = React.useState(false);
+        const [triggerResults, setTriggerResults] = React.useState([]); // Results from triggerAlerts
+        const [triggeringAlerts, setTriggeringAlerts] = React.useState(false);
         
         // Gather acceptance criteria from linked work items
         const sessionWorkItemIds = React.useMemo(() => {
@@ -17813,6 +18062,99 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
             setCriteriaResults(allCriteria);
             setClosingItems(new Set(sessionWorkItems.map(wi => wi.id)));
         }, [sessionWorkItems]);
+        
+        // Phase 5.4: Detect which interfaces this session's stream provides
+        const sessionStreamId = React.useMemo(() => {
+            const streamIds = [...new Set(sessionWorkItems.filter(wi => wi.streamId).map(wi => wi.streamId))];
+            return streamIds.length === 1 ? streamIds[0] : null;
+        }, [sessionWorkItems]);
+        
+        const providedInterfaces = React.useMemo(() => {
+            if (!sessionStreamId || !interfaces) return [];
+            return (interfaces || []).filter(i => i.streamId === sessionStreamId);
+        }, [sessionStreamId, interfaces]);
+        
+        // Interfaces that actually have dependents (other streams consume them)
+        const interfacesWithDependents = React.useMemo(() => {
+            if (!providedInterfaces.length || !dependencies) return [];
+            return providedInterfaces.filter(iface => 
+                (dependencies || []).some(d => d.interfaceId === iface.id)
+            );
+        }, [providedInterfaces, dependencies]);
+        
+        // Initialize interface change tracking
+        React.useEffect(() => {
+            if (interfacesWithDependents.length > 0 && interfaceChanges.length === 0) {
+                setInterfaceChanges(interfacesWithDependents.map(iface => ({
+                    interfaceId: iface.id,
+                    description: iface.description,
+                    changed: false,
+                    changeDescription: '',
+                    changeNotes: ''
+                })));
+            }
+        }, [interfacesWithDependents]);
+        
+        const hasInterfaceChanges = interfaceChanges.some(ic => ic.changed);
+        
+        const toggleInterfaceChange = (interfaceId) => {
+            setInterfaceChanges(prev => prev.map(ic => 
+                ic.interfaceId === interfaceId ? { ...ic, changed: !ic.changed } : ic
+            ));
+        };
+        
+        const updateInterfaceChange = (interfaceId, field, value) => {
+            setInterfaceChanges(prev => prev.map(ic => 
+                ic.interfaceId === interfaceId ? { ...ic, [field]: value } : ic
+            ));
+        };
+        
+        // Trigger dependency alerts for changed interfaces
+        const handleTriggerAlerts = async () => {
+            if (!firebaseUid || alertsTriggered) return;
+            setTriggeringAlerts(true);
+            const actor = config?.ownerName || 'Owner';
+            const allResults = [];
+            
+            try {
+                for (const ic of interfaceChanges.filter(c => c.changed && c.changeDescription.trim())) {
+                    const results = await DependencyAlertService.triggerAlerts(firebaseUid, {
+                        interfaceId: ic.interfaceId,
+                        changeDescription: ic.changeDescription,
+                        changeNotes: ic.changeNotes || deliverableNotes,
+                        sessionId: session?.id,
+                        workItemId: sessionWorkItemIds[0] || null,
+                        actor,
+                        interfaces: interfaces || [],
+                        dependencies: dependencies || [],
+                        streams: streams || [],
+                        workItems: workItems || [],
+                        alerts: dependencyAlerts || []
+                    });
+                    allResults.push(...results);
+                }
+                
+                // Update the interface lastUpdated timestamps
+                for (const ic of interfaceChanges.filter(c => c.changed)) {
+                    await StreamInterfaceService.update(firebaseUid, ic.interfaceId, {
+                        lastUpdatedBy: actor,
+                        lastChangeDescription: ic.changeDescription
+                    });
+                }
+                
+                setTriggerResults(allResults);
+                setAlertsTriggered(true);
+                
+                if (allResults.length > 0) {
+                    showAlert(`🔔 ${allResults.length} dependency alert${allResults.length !== 1 ? 's' : ''} triggered — work items created in dependent streams.`, 'success');
+                }
+            } catch (e) {
+                console.error('[DependencyAlert] Failed to trigger alerts:', e);
+                showAlert(`Error triggering alerts: ${e.message}`, 'error');
+            } finally {
+                setTriggeringAlerts(false);
+            }
+        };
         
         const toggleCriteria = (criteriaId) => {
             setCriteriaResults(prev => prev.map(c => c.id === criteriaId ? { ...c, met: !c.met } : c));
@@ -17969,6 +18311,104 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                                                 </div>
                                             ))}
                                         </div>
+                                    </div>
+                                )}
+                                
+                                {/* Phase 5.4: Interface change detection */}
+                                {interfacesWithDependents.length > 0 && (
+                                    <div className="border-t border-slate-700 pt-4">
+                                        <div className="text-sm font-medium text-slate-300 mb-1">🔗 Did any provided interfaces change?</div>
+                                        <div className="text-xs text-slate-500 mb-3">
+                                            This stream provides interfaces other streams depend on. If any changed, dependent streams will be notified with a work item.
+                                        </div>
+                                        
+                                        <div className="space-y-2">
+                                            {interfaceChanges.map(ic => {
+                                                const depCount = (dependencies || []).filter(d => d.interfaceId === ic.interfaceId).length;
+                                                return (
+                                                    <div key={ic.interfaceId} className={`rounded-lg border transition-colors ${
+                                                        ic.changed ? 'bg-amber-900/20 border-amber-700/50' : 'bg-slate-900/60 border-slate-700'
+                                                    }`}>
+                                                        <div className="flex items-center gap-3 px-3 py-2.5 cursor-pointer" onClick={() => toggleInterfaceChange(ic.interfaceId)}>
+                                                            <div className={`w-5 h-5 rounded flex items-center justify-center flex-shrink-0 ${
+                                                                ic.changed ? 'bg-amber-600 text-white' : 'border-2 border-slate-500'
+                                                            }`}>
+                                                                {ic.changed && <span className="text-xs">✓</span>}
+                                                            </div>
+                                                            <div className="flex-1">
+                                                                <div className={`text-sm ${ic.changed ? 'text-amber-200' : 'text-slate-200'}`}>{ic.description}</div>
+                                                                <div className="text-xs text-slate-500">{depCount} dependent stream{depCount !== 1 ? 's' : ''}</div>
+                                                            </div>
+                                                        </div>
+                                                        
+                                                        {ic.changed && (
+                                                            <div className="px-3 pb-3 space-y-2">
+                                                                <input
+                                                                    type="text"
+                                                                    value={ic.changeDescription}
+                                                                    onChange={e => updateInterfaceChange(ic.interfaceId, 'changeDescription', e.target.value)}
+                                                                    placeholder="What changed? e.g. 'Score format now includes difficulty badge'"
+                                                                    className="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-600 rounded text-sm text-white placeholder-slate-500 focus:border-amber-500 outline-none"
+                                                                    onClick={e => e.stopPropagation()}
+                                                                />
+                                                                <textarea
+                                                                    value={ic.changeNotes}
+                                                                    onChange={e => updateInterfaceChange(ic.interfaceId, 'changeNotes', e.target.value)}
+                                                                    placeholder="Additional context for the dependent stream's Claude session (optional)"
+                                                                    className="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-600 rounded text-sm text-white placeholder-slate-500 focus:border-amber-500 outline-none resize-none"
+                                                                    rows={2}
+                                                                    onClick={e => e.stopPropagation()}
+                                                                />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                        
+                                        {/* Trigger alerts button */}
+                                        {hasInterfaceChanges && !alertsTriggered && (
+                                            <div className="mt-3">
+                                                <button 
+                                                    onClick={handleTriggerAlerts}
+                                                    disabled={triggeringAlerts || interfaceChanges.filter(c => c.changed && !c.changeDescription.trim()).length > 0}
+                                                    className={`px-4 py-2 rounded-lg text-sm font-medium w-full ${
+                                                        triggeringAlerts ? 'bg-slate-700 text-slate-400 cursor-wait' :
+                                                        interfaceChanges.filter(c => c.changed && !c.changeDescription.trim()).length > 0 
+                                                            ? 'bg-slate-700 text-slate-500 cursor-not-allowed' 
+                                                            : 'bg-amber-600 hover:bg-amber-500 text-white'
+                                                    }`}>
+                                                    {triggeringAlerts ? '⏳ Creating dependency alerts...' : 
+                                                     `🔔 Notify ${interfaceChanges.filter(c => c.changed).length} changed interface${interfaceChanges.filter(c => c.changed).length !== 1 ? 's' : ''}`}
+                                                </button>
+                                                {interfaceChanges.filter(c => c.changed && !c.changeDescription.trim()).length > 0 && (
+                                                    <div className="text-xs text-amber-400/70 mt-1">Describe what changed for each checked interface</div>
+                                                )}
+                                            </div>
+                                        )}
+                                        
+                                        {/* Alert results */}
+                                        {alertsTriggered && triggerResults.length > 0 && (
+                                            <div className="mt-3 bg-green-900/20 border border-green-700/50 rounded-lg px-3 py-2.5">
+                                                <div className="text-sm text-green-300 font-medium mb-1">
+                                                    ✅ {triggerResults.length} dependency alert{triggerResults.length !== 1 ? 's' : ''} triggered
+                                                </div>
+                                                <div className="space-y-1">
+                                                    {triggerResults.map((r, i) => (
+                                                        <div key={i} className="text-xs text-green-200/70">
+                                                            📋 {r.workItem?.id}: "{r.workItem?.title}" → {r.dependentStream?.name}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div className="text-xs text-green-200/50 mt-1.5">
+                                                    Work items created in dependent streams with change context for prompt chaining.
+                                                </div>
+                                            </div>
+                                        )}
+                                        
+                                        {alertsTriggered && triggerResults.length === 0 && (
+                                            <div className="mt-3 text-xs text-slate-500">No alerts needed — no dependent streams found.</div>
+                                        )}
                                     </div>
                                 )}
                                 
@@ -20625,7 +21065,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
     // WorkStreamsView — Named, owned, parallel tracks of work (Phase 5.2)
     // =========================================================================
     
-    function WorkStreamsView({ apps, config, globalWorkItems, globalStreams, globalInterfaces, globalDependencies, showAlert, showConfirm, showPrompt, setView }) {
+    function WorkStreamsView({ apps, config, globalWorkItems, globalStreams, globalInterfaces, globalDependencies, globalDependencyAlerts, showAlert, showConfirm, showPrompt, setView }) {
         const [selectedApp, setSelectedApp] = React.useState('all');
         const [editingStream, setEditingStream] = React.useState(null); // null, 'new', or stream object
         const [firebaseUser, setFirebaseUser] = React.useState(null);
@@ -20737,6 +21177,31 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
             );
         };
         
+        // Phase 5.4: Resolve a dependency alert
+        const handleResolveAlert = async (alert, resolution) => {
+            if (!firebaseUser) return;
+            const actor = config?.ownerName || 'Owner';
+            try {
+                await DependencyAlertService.resolve(firebaseUser.uid, alert.id, resolution, actor);
+                
+                // If resolved as 'updated', also mark the dependency as 'verified'
+                if (resolution === 'updated') {
+                    await DependencyService.update(firebaseUser.uid, alert.dependencyId, {
+                        status: 'verified',
+                        lastVerified: new Date().toISOString(),
+                        lastVerifiedBy: actor
+                    });
+                }
+                
+                showAlert(`Alert resolved: ${resolution === 'updated' ? 'Updated' : 'No impact'}.`, '✅ Resolved');
+            } catch (e) {
+                showAlert(`Error: ${e.message}`, 'error');
+            }
+        };
+        
+        // Pending alerts count for summary stats
+        const totalPendingAlerts = DependencyAlertService.getPending(globalDependencyAlerts || []).length;
+        
         const statusColors = {
             active: 'bg-green-900/30 text-green-400 border-green-800/50',
             paused: 'bg-yellow-900/30 text-yellow-400 border-yellow-800/50',
@@ -20769,12 +21234,13 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 </div>
                 
                 {/* Summary stats */}
-                <div className="grid grid-cols-4 gap-4 mb-6">
+                <div className={`grid gap-4 mb-6 ${totalPendingAlerts > 0 ? 'grid-cols-5' : 'grid-cols-4'}`}>
                     {[
                         { label: 'Active Streams', value: filteredStreams.filter(s => s.status === 'active').length, color: 'text-green-400' },
                         { label: 'Blocked', value: filteredStreams.filter(s => s.status === 'blocked').length, color: 'text-red-400' },
                         { label: 'Complete', value: filteredStreams.filter(s => s.status === 'complete').length, color: 'text-slate-400' },
-                        { label: 'Total Items', value: filteredStreams.reduce((sum, s) => sum + WorkItemService.filterByStream(globalWorkItems, s.id).length, 0), color: 'text-blue-400' }
+                        { label: 'Total Items', value: filteredStreams.reduce((sum, s) => sum + WorkItemService.filterByStream(globalWorkItems, s.id).length, 0), color: 'text-blue-400' },
+                        ...(totalPendingAlerts > 0 ? [{ label: '🔔 Pending Alerts', value: totalPendingAlerts, color: 'text-amber-400' }] : [])
                     ].map(stat => (
                         <div key={stat.label} className="bg-slate-800 rounded-lg border border-slate-700 p-4 text-center">
                             <div className={`text-2xl font-bold ${stat.color}`}>{stat.value}</div>
@@ -20823,6 +21289,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                     const isBlocked = WorkStreamService.isBlocked(stream, globalStreams);
                                     const interfaces = StreamInterfaceService.getByStream(globalInterfaces, stream.id);
                                     const consumedDeps = DependencyService.getConsumedBy(globalDependencies, stream.id);
+                                    const pendingAlerts = DependencyAlertService.getPendingForStream(globalDependencyAlerts || [], globalDependencies, stream.id);
                                     
                                     return (
                                         <div key={stream.id} className={`bg-slate-800 rounded-xl border ${stream.status === 'blocked' ? 'border-red-800/50' : 'border-slate-700'} p-4`}>
@@ -20905,6 +21372,26 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                                             </div>
                                                         );
                                                     })}
+                                                </div>
+                                            )}
+                                            
+                                            {/* Phase 5.4: Pending dependency alerts */}
+                                            {pendingAlerts.length > 0 && (
+                                                <div className="mb-3 bg-amber-900/20 border border-amber-700/50 rounded-lg px-3 py-2">
+                                                    <div className="text-xs font-medium text-amber-300 mb-1">
+                                                        🔔 {pendingAlerts.length} dependency update{pendingAlerts.length !== 1 ? 's' : ''} pending
+                                                    </div>
+                                                    {pendingAlerts.slice(0, 3).map(alert => {
+                                                        const iface = globalInterfaces.find(i => i.id === alert.interfaceId);
+                                                        return (
+                                                            <div key={alert.id} className="text-xs text-amber-200/70 mb-0.5">
+                                                                • {iface?.description || 'Interface'}: {alert.changeDescription}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                    {pendingAlerts.length > 3 && (
+                                                        <div className="text-xs text-amber-200/50">+{pendingAlerts.length - 3} more</div>
+                                                    )}
                                                 </div>
                                             )}
                                             
