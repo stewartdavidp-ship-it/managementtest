@@ -1,0 +1,271 @@
+Command Center v8.55.2 — Streams Evolution: Data Model + Concept Parser
+=========================================================================
+Released: 2026-02-11
+
+Session 1 of the CC Streams Evolution project. Extends the stream data model
+and adds automatic concept extraction from pushed documents.
+
+STREAM DATA MODEL (Analytics Satellite v1.0.1)
+- Extended model: appIds[], project, concepts[], artifacts[], sessions[],
+  tests{}, codeReview{}, openItems[], next
+- Multi-app scope: streams can now span multiple apps
+- Migration: existing streams auto-enriched with safe defaults on load
+- New statuses: planning, testing, archived
+
+STREAM EDITOR ENHANCEMENTS
+- Additional Apps multi-select (chip toggles)
+- Project field with datalist from existing streams
+- Next field (drives session prep)
+- Open Items textarea (one per line)
+- All new status options in dropdown
+
+STREAM CARD BADGES
+- Multi-app count, concept count, open items count, test coverage
+- Stats bar: flex-wrap with planning/testing counts
+
+CONCEPT PARSER (CC Core)
+- parseConcepts(): regex extraction from <!-- cc-concepts --> markers
+- checkPushedDocsForConcepts(): auto-prompt after doc push
+- Hooked into all 3 doc push flows (Deploy All x2, Session Wizard)
+- Deduplication by text when merging into existing stream concepts
+- Console instrumentation: [Concepts] prefix at all decision points
+
+---
+
+Command Center v8.55.0 — Smart Deploy Validation Complete
+==========================================================
+Released: 2026-02-11
+
+Completes the four remaining validation rules from the SMART_DEPLOY_REDESIGN design doc.
+
+SMART DEPLOY VALIDATION
+- Auto-Bump buttons: Per-app "Auto-Bump to vX.X.X" button on version-not-incremented issues
+  - Patches index.html + sw.js versions in-memory without re-uploading
+  - "Fix All" banner button when 2+ apps need bumps
+- Shared files validation: Warns when shared files (e.g. shared/cc-shared.css) are new to repo
+- Repo access check: Verifies push access to all target repos before deploy
+- Cross-app version consistency: Warns about divergent major versions within a project
+
+NEW GITHUB API METHODS
+- checkPushAccess(repo) — verify push permissions
+- fileExists(repo, path) — check if file exists in repo
+
+---
+
+Command Center v8.54.0 — Polish + Documentation (Session 7 — FINAL)
+====================================================================
+Released: 2026-02-11
+
+This is the final session of the Satellite Architecture Restructure project.
+
+DOCUMENTATION
+- NEW: SATELLITE_ARCHITECTURE.md — Full guide to the satellite app system
+  - How credentials are shared (gs_* localStorage keys)
+  - Firebase initialization pattern
+  - Cross-app navigation (SatelliteHeader, CC.getCoreUrl())
+  - Step-by-step guide for building new satellites
+  - Conventions for naming, styling, file size targets
+- Enhanced cc-shared.css header: section index, usage notes, version
+- Enhanced cc-shared.js header: API reference, design decisions, version
+
+DEAD CODE CLEANUP (Core: 20,354 → 20,307 lines, -47)
+- Removed empty view stubs: Repo Files, Environment Optimization, Users, Beta Analytics
+- Removed empty service stubs: PorkbunService, GoDaddyService, DomainProviderRegistry
+- Removed empty ProductBriefModal comment block
+- Compressed consecutive blank lines
+
+CROSS-APP NAVIGATION
+- All 3 satellites verified using SatelliteHeader with CC logo + back link
+- CC Core satellite launcher (🛰️) links all 3 satellites (ready: true)
+
+FINAL LINE COUNT AUDIT
+- Core:            20,307 lines (target: ≤20K — 307 over due to SessionLaunchModal)
+- Infrastructure:   7,014 lines (target: ≤7K — at target)
+- Quality:          3,729 lines (target: ≤5K ✅)
+- Analytics:        4,034 lines (target: ≤5K ✅)
+- Shared CSS:         404 lines (target: ≤500 ✅)
+- Shared JS:          341 lines (target: ≤500 ✅)
+- Total codebase:  35,829 lines (was 31,774 in monolith — +13% for full satellite extraction)
+
+PROJECT COMPLETE
+================
+Sessions 1–7 (v8.49.0 – v8.54.0) reduced the monolithic CC Core from 31,774 lines
+to 20,307 lines (-36%) while extracting 14,777 lines into 3 satellite apps with
+shared infrastructure. The Dashboard was restructured to put app cards front and
+center with a new Session Launch Modal for one-click session starts.
+
+ARCHITECTURE (FINAL)
+--------------------
+command-center/
+├── index.html              (20,307 lines — CC Core v8.54.0)
+├── shared/
+│   ├── cc-shared.css       (404 lines — v1.1.0)
+│   └── cc-shared.js        (341 lines — v1.1.0)
+├── infrastructure/
+│   └── index.html          (7,014 lines — v1.0.0)
+├── quality/
+│   └── index.html          (3,729 lines — v1.0.0)
+├── analytics/
+│   └── index.html          (4,034 lines — v1.0.0)
+├── SATELLITE_ARCHITECTURE.md  (NEW — 237 lines)
+├── CHANGELOG.md
+├── PROJECT_PLAN.md
+└── RELEASE_NOTES.txt
+
+---
+
+Command Center v8.53.0 — Dashboard Workflow: Launch & Land (Session 6)
+=====================================================================
+Released: 2026-02-11
+
+CORE SIZE
+- Core: 20,285 → ~20,350 lines (net +65, added SessionLaunchModal, removed right column)
+- This is the smallest change session — focused on UX restructure, not code extraction
+
+PHASE A: DASHBOARD CLEANUP
+- Removed 3-column grid → single column layout
+- App cards are now the hero — visible immediately without scrolling
+- Slim drop zone (one line) replaces bulky upload box
+- App cards show as responsive grid with version badges, ready items, session buttons
+- Pipeline summary bar (collapsed) replaces right-column stats
+- Quick actions bar simplified (removed Smart Deploy, Portfolio, Sync buttons)
+
+PHASE B: SESSION LAUNCH MODAL
+- 🤖 icon on each app card when ready work items exist
+- Opens lightweight SessionLaunchModal (not the full 3-step ClaudePrepModal)
+- Fast path: top 3 items pre-checked, auto-suggested session type, one-click generate
+- Expandable section: full item picker, type selector, recent session history
+- Creates session record, transitions items, downloads prep zip, copies prompt
+- Existing ClaudePrepModal via Projects tab unchanged
+
+PHASE C: SMART DEPLOY RETURN
+- Post-deploy summary panel appears inline after successful deploys
+- Shows session match, SESSION_RETURN.json results, action buttons
+- Replaces need to navigate to Session Log for post-deploy review
+- "Review this session?" nudge for deploys without SESSION_RETURN.json
+
+PHASE D: NAV CONSOLIDATION
+- 5 nav sections → 4: Deploy, Plan, Sessions, Settings
+- Smart Deploy removed from nav (view preserved for direct access)
+- Projects + Backlog merged under "Plan"
+- Maintain → Sessions, Configure → Settings (renamed)
+
+ARCHITECTURE STATUS
+-------------------
+command-center/
+├── index.html              (~20,350 lines — CC Core)
+├── shared/
+│   ├── cc-shared.css       (391 lines)
+│   └── cc-shared.js        (328 lines)
+├── infrastructure/
+│   └── index.html          (7,014 lines — v1.0.0)
+├── quality/
+│   └── index.html          (3,729 lines — v1.0.0)
+└── analytics/
+    └── index.html          (4,034 lines — v1.0.0)
+
+---
+
+Command Center v8.52.0 — Analytics Satellite (Session 5)
+========================================================
+Released: 2026-02-11
+
+CORE SIZE REDUCTION
+- Core: 23,143 → 20,285 lines (-12.3%)
+- Cumulative: 31,774 → 20,285 (-36.2%)
+
+ANALYTICS SATELLITE (analytics/index.html — 4,034 lines)
+- 7 tabs: Portfolio, Setup Guide, Users, Beta Program, Streams, Product Briefs, Activity Feed
+- Full service copies for stream/dependency/activity management
+- Cross-app navigation to CC Core
+
+CORE CHANGES
+- Services trimmed to minimal stubs (WorkStream, StreamInterface, Dependency)
+- Monitor nav section removed (portfolio, optimize, users, beta)
+- Streams nav dropdown removed
+- Activity Feed tab removed from SessionLogView
+- ProductBriefModal replaced with Analytics satellite link
+- Portfolio quick action opens Analytics satellite
+
+---
+
+Command Center v8.51.0 — Quality Satellite (Session 4)
+======================================================
+Released: 2026-02-11
+
+CORE SIZE REDUCTION
+-------------------
+25,752 -> 23,143 lines (-2,609 lines, -10%)
+Cumulative: 31,774 -> 23,143 (-8,631 lines, -27%)
+
+NEW: QUALITY SATELLITE
+-----------------------
+quality/index.html v1.0.0 (~3,700 lines)
+
+Tab 1: Issues
+  - Full issue tracker (create, edit, status management)
+  - User reports inbox from Firebase public path
+  - Issue-to-work-item promotion
+  - Release-to-prod workflow
+
+Tab 2: Releases
+  - Release coordination with per-app readiness assessment
+  - Completion %, milestone breakdown, blocker detection
+  - Auto-generated test checklists from work items
+  - Go/no-go summary with version drift detection
+
+Tab 3: Archive
+  - gs-active upload/download management
+  - Session briefing generation with deploy history
+  - Archive file browser and cleanup
+
+REMOVED FROM CC CORE
+---------------------
+Views:
+  - IssuesView, NewIssueModal, EditIssueModal
+  - ReleaseCoordinationView
+  - ArchiveView
+
+Services:
+  - ReleaseService (full implementation)
+  - UserReportService (full implementation)
+  - IssueService trimmed to minimal: listen, update, linkToVersion
+
+Navigation:
+  - issues removed from Monitor dropdown
+  - releases removed from Backlog dropdown
+  - archive removed from Maintain dropdown
+
+WHAT CHANGED IN CC CORE
+------------------------
+- IssueService reduced to 3 methods (listen, update, linkToVersion)
+  needed for Dashboard issue badges and deploy issue-linking
+- cc-quality app registered in DEFAULT_APP_DEFINITIONS
+- Quality satellite launcher entry activated (ready: true)
+- Nav dropdowns simplified
+
+WHAT STILL WORKS
+-----------------
+All core functionality preserved:
+  - Deploy cycle (Dashboard, Smart Deploy, History)
+  - Claude Prep + Session Wizard
+  - Session Log + Post-Session Review
+  - Backlog + Work Streams
+  - Portfolio + Setup Guide
+  - Users + Beta Analytics
+  - Settings (all credential management)
+  - Satellite launcher (Infrastructure + Quality now active)
+  - Dashboard issue badges (via minimal IssueService)
+  - Deploy issue-linking workflow
+
+ARCHITECTURE STATUS
+--------------------
+command-center/
+├── index.html              (23,143 lines — CC Core)
+├── shared/
+│   ├── cc-shared.css       (391 lines)
+│   └── cc-shared.js        (328 lines)
+├── infrastructure/
+│   └── index.html          (7,014 lines — v1.0.0)
+└── quality/
+    └── index.html          (3,729 lines — v1.0.0)
