@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.39.0">
+    <meta name="version" content="8.40.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -1265,7 +1265,7 @@
      *   type: feature | bugfix | enhancement | chore | research
      *   priority: core | nice-to-have | out-of-scope
      *   milestone: prototype | alpha | beta | production
-     *   status: idea → ready → in-progress → done → deferred
+     *   status: idea → ready → in-progress → review → done → deferred
      *   effort: quick | session | multi-session | epic
      *   criteria: acceptance criteria array
      *   context: { filesAffected, sections, dependencies, notes, relatedItems }
@@ -1361,6 +1361,9 @@
                 case 'in-progress':
                     updates.startedAt = now;
                     break;
+                case 'review':
+                    updates.reviewStartedAt = now;
+                    break;
                 case 'done':
                     updates.completedAt = now;
                     break;
@@ -1378,6 +1381,26 @@
             await this.updateStatus(uid, itemId, 'done', {
                 completedInVersion: version
             });
+        },
+        
+        // Check if item has criteria (used for auto-transition suggestions)
+        hasCriteria(item) {
+            return item?.criteria && item.criteria.length > 0 && item.criteria.some(c => c.trim());
+        },
+        
+        // Check if item is stale (in-progress or review for 7+ days)
+        isStale(item) {
+            if (item.status !== 'in-progress' && item.status !== 'review') return false;
+            const startDate = item.status === 'review' ? item.reviewStartedAt : item.startedAt;
+            if (!startDate) return false;
+            return (Date.now() - new Date(startDate).getTime()) > 7 * 24 * 60 * 60 * 1000;
+        },
+        
+        // Get stale days count
+        getStaleDays(item) {
+            const startDate = item.status === 'review' ? item.reviewStartedAt : item.startedAt;
+            if (!startDate) return 0;
+            return Math.floor((Date.now() - new Date(startDate).getTime()) / (24 * 60 * 60 * 1000));
         },
         
         // Get work items filtered by app
@@ -1398,6 +1421,11 @@
         // Get in-progress items (for deploy close-the-loop)
         getInProgress(items, appId) {
             return items.filter(i => i.status === 'in-progress' && (!appId || i.appId === appId));
+        },
+        
+        // Get items in review (for post-deploy completion)
+        getInReview(items, appId) {
+            return items.filter(i => i.status === 'review' && (!appId || i.appId === appId));
         },
         
         // Batch create work items (for scoping flow)
@@ -2954,7 +2982,7 @@
             // === Open Work Items Summary (if available and not already targeted) ===
             if (allWorkItems && allWorkItems.length > 0) {
                 const appItems = allWorkItems.filter(wi => wi.appId === app.id);
-                const openItems = appItems.filter(wi => wi.status === 'ready' || wi.status === 'in-progress');
+                const openItems = appItems.filter(wi => wi.status === 'ready' || wi.status === 'in-progress' || wi.status === 'review');
                 const targetIds = new Set((targetWorkItems || []).map(wi => wi.id));
                 const otherOpen = openItems.filter(wi => !targetIds.has(wi.id));
                 
@@ -6430,25 +6458,27 @@
                 }
                 
                 // === Phase 2.3: Work Item Completion Dialog ===
-                // After successful deploy, check for in-progress work items for this app
+                // After successful deploy, check for in-progress and review work items for this app
                 if (firebaseUid) {
                     const inProgressItems = WorkItemService.getInProgress(globalWorkItems, appId);
+                    const inReviewItems = WorkItemService.getInReview(globalWorkItems, appId);
+                    const completableItems = [...inProgressItems, ...inReviewItems];
                     
-                    if (inProgressItems.length > 0) {
+                    if (completableItems.length > 0) {
                         // Show completion dialog after a delay (after issue linking if any)
                         const wiDelay = openIssues.length > 0 ? 1500 : 500;
                         setTimeout(async () => {
-                            const itemList = inProgressItems.map(wi => `${wi.id}: ${wi.title}`).join('\n');
+                            const itemList = completableItems.map(wi => `${wi.id}: ${wi.title} (${wi.status})`).join('\n');
                             const confirmed = await showConfirm(
-                                `This deploy (v${newVersion}) may complete these work items:\n\n${itemList}\n\nMark ${inProgressItems.length === 1 ? 'it' : 'them'} as done?`,
+                                `This deploy (v${newVersion}) may complete these work items:\n\n${itemList}\n\nMark ${completableItems.length === 1 ? 'it' : 'them'} as done?`,
                                 `✅ Complete Work Items — ${app.name}`
                             );
                             
                             if (confirmed) {
-                                for (const wi of inProgressItems) {
+                                for (const wi of completableItems) {
                                     await WorkItemService.complete(firebaseUid, wi.id, newVersion);
                                 }
-                                console.log(`[Deploy] Completed ${inProgressItems.length} work items for ${appId} v${newVersion}`);
+                                console.log(`[Deploy] Completed ${completableItems.length} work items for ${appId} v${newVersion}`);
                             }
                         }, wiDelay);
                     }
@@ -6464,7 +6494,7 @@
                         // Enrich deployment record with session + work item data
                         deployment.sessionId = latestSession.id;
                         deployment.sessionType = latestSession.type;
-                        deployment.workItemsCompleted = inProgressItems.map(wi => wi.id);
+                        deployment.workItemsCompleted = completableItems.map(wi => wi.id);
                         
                         console.log(`[Deploy] Linked to session ${latestSession.id} (${latestSession.type})`);
                     }
@@ -9837,7 +9867,7 @@
                                     View All →
                                 </button>
                             </h3>
-                            <div className="grid grid-cols-4 gap-2 text-center mb-3">
+                            <div className="grid grid-cols-5 gap-2 text-center mb-3">
                                 <div className="bg-slate-700/50 rounded p-2">
                                     <div className="text-lg font-bold text-slate-300">
                                         {globalWorkItems.filter(i => i.status === 'idea').length}
@@ -9856,6 +9886,12 @@
                                     </div>
                                     <div className="text-xs text-slate-400">In Progress</div>
                                 </div>
+                                <div className="bg-purple-900/30 rounded p-2">
+                                    <div className="text-lg font-bold text-purple-400">
+                                        {globalWorkItems.filter(i => i.status === 'review').length}
+                                    </div>
+                                    <div className="text-xs text-slate-400">Review</div>
+                                </div>
                                 <div className="bg-green-900/30 rounded p-2">
                                     <div className="text-lg font-bold text-green-400">
                                         {globalWorkItems.filter(i => i.status === 'done').length}
@@ -9866,7 +9902,7 @@
                             {/* Recent active items */}
                             <div className="space-y-1">
                                 {globalWorkItems
-                                    .filter(i => i.status === 'in-progress' || i.status === 'ready')
+                                    .filter(i => i.status === 'in-progress' || i.status === 'review' || i.status === 'ready')
                                     .slice(0, 3)
                                     .map(item => {
                                         const app = Object.values(apps).find(a => a.id === item.appId);
@@ -9876,7 +9912,7 @@
                                                 {app && <span className="text-xs">{app.icon}</span>}
                                                 <span className="flex-1 truncate">{item.title}</span>
                                                 <span className={`px-1.5 py-0.5 rounded text-xs ${
-                                                    item.status === 'in-progress' ? 'bg-amber-900/50 text-amber-300' : 'bg-blue-900/50 text-blue-300'
+                                                    item.status === 'in-progress' ? 'bg-amber-900/50 text-amber-300' : item.status === 'review' ? 'bg-purple-900/50 text-purple-300' : 'bg-blue-900/50 text-blue-300'
                                                 }`}>{item.status}</span>
                                             </div>
                                         );
@@ -10393,21 +10429,18 @@
         // === BACKLOG HEALTH ===
         const backlogHealth = React.useMemo(() => {
             const items = globalWorkItems || [];
-            const byStatus = { idea: 0, ready: 0, 'in-progress': 0, done: 0, deferred: 0 };
+            const byStatus = { idea: 0, ready: 0, 'in-progress': 0, review: 0, done: 0, deferred: 0 };
             const byType = { feature: 0, bugfix: 0, enhancement: 0, chore: 0, research: 0 };
             const byApp = {};
-            let aging = 0; // items in-progress > 7 days
-            const now = Date.now();
+            let aging = 0; // items in-progress or review > 7 days
             
             items.forEach(wi => {
                 if (byStatus.hasOwnProperty(wi.status)) byStatus[wi.status]++;
+                else if (wi.status) byStatus[wi.status] = (byStatus[wi.status] || 0) + 1;
                 if (byType.hasOwnProperty(wi.type)) byType[wi.type]++;
                 if (!byApp[wi.appId]) byApp[wi.appId] = 0;
                 if (wi.status !== 'done' && wi.status !== 'deferred') byApp[wi.appId]++;
-                if (wi.status === 'in-progress' && wi.startedAt) {
-                    const age = now - new Date(wi.startedAt).getTime();
-                    if (age > 7 * 24 * 60 * 60 * 1000) aging++;
-                }
+                if (WorkItemService.isStale(wi)) aging++;
             });
             
             return { byStatus, byType, byApp, aging, total: items.length };
@@ -17165,6 +17198,20 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                     files: session.packageFiles || [],
                     summary: deliverableNotes
                 });
+                
+                // === Phase 3.3: In-Progress → Review auto-transition ===
+                // When review starts, transition linked work items to review status
+                const actor = config?.ownerName || 'Owner';
+                for (const wi of sessionWorkItems) {
+                    if (wi.status === 'in-progress') {
+                        try {
+                            await WorkItemService.updateStatus(firebaseUid, wi.id, 'review');
+                            ActivityLogService.logItemTransition(firebaseUid, actor, app?.name || session.appId, wi.id, wi.title, 'in-progress', 'review').catch(() => {});
+                        } catch (e) {
+                            console.warn(`[Review] Could not transition ${wi.id} to review:`, e);
+                        }
+                    }
+                }
             }
             setStep(totalCriteria > 0 ? 2 : 3);
         };
@@ -17196,9 +17243,10 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
             const actor = config?.ownerName || 'Owner';
             try {
                 for (const itemId of closingItems) {
-                    await WorkItemService.updateStatus(firebaseUid, itemId, 'done');
                     const wi = sessionWorkItems.find(w => w.id === itemId);
-                    ActivityLogService.logItemTransition(firebaseUid, actor, app?.name || session.appId, itemId, wi?.title || itemId, 'in-progress', 'done').catch(() => {});
+                    const fromStatus = wi?.status || 'review';
+                    await WorkItemService.updateStatus(firebaseUid, itemId, 'done');
+                    ActivityLogService.logItemTransition(firebaseUid, actor, app?.name || session.appId, itemId, wi?.title || itemId, fromStatus, 'done').catch(() => {});
                 }
                 if (closingItems.size > 0) {
                     ActivityLogService.logSessionComplete(firebaseUid, actor, app?.name || session.appId, session.id, closingItems.size).catch(() => {});
@@ -19052,6 +19100,7 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
             { value: 'idea', label: '💡 Idea' },
             { value: 'ready', label: '📋 Ready' },
             { value: 'in-progress', label: '🔨 In Progress' },
+            { value: 'review', label: '📝 In Review' },
             { value: 'done', label: '✅ Done' },
             { value: 'deferred', label: '⏸️ Deferred' }
         ];
@@ -19292,9 +19341,36 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         const updateItem = async (data) => {
             if (!firebaseUser || !showEditModal?.item?.id) return;
             const id = showEditModal.item.id;
-            await WorkItemService.update(firebaseUser.uid, id, data);
-            setShowEditModal(null);
-            showAlert(`Updated ${id}`, 'success');
+            const originalItem = showEditModal.item;
+            
+            // === Phase 3.3: Idea → Ready auto-suggest ===
+            // When criteria are added to an idea-status item, suggest promoting to ready
+            const hadCriteria = originalItem.criteria && originalItem.criteria.length > 0 && originalItem.criteria.some(c => c.trim());
+            const hasCriteriaNow = data.criteria && data.criteria.length > 0 && data.criteria.some(c => c.trim());
+            const isIdea = originalItem.status === 'idea';
+            const statusUnchanged = data.status === 'idea' || data.status === originalItem.status;
+            
+            if (isIdea && !hadCriteria && hasCriteriaNow && statusUnchanged) {
+                await WorkItemService.update(firebaseUser.uid, id, data);
+                setShowEditModal(null);
+                // Ask about promotion after modal closes
+                setTimeout(async () => {
+                    const confirmed = await showConfirm(
+                        `${id} now has acceptance criteria.\n\nPromote from Idea → Ready?`,
+                        '📋 Ready for Work?'
+                    );
+                    if (confirmed) {
+                        await WorkItemService.updateStatus(firebaseUser.uid, id, 'ready');
+                        const actor = config?.ownerName || 'Owner';
+                        ActivityLogService.logItemTransition(firebaseUser.uid, actor, '', id, data.title, 'idea', 'ready').catch(() => {});
+                        showAlert(`${id} promoted to Ready`, 'success');
+                    }
+                }, 300);
+            } else {
+                await WorkItemService.update(firebaseUser.uid, id, data);
+                setShowEditModal(null);
+                showAlert(`Updated ${id}`, 'success');
+            }
         };
         
         const deleteItem = async (item) => {
@@ -19430,7 +19506,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
             
             // Status filter
             if (statusFilter === 'active') {
-                items = items.filter(i => ['idea', 'ready', 'in-progress'].includes(i.status));
+                items = items.filter(i => ['idea', 'ready', 'in-progress', 'review'].includes(i.status));
             } else if (statusFilter !== 'all') {
                 items = items.filter(i => i.status === statusFilter);
             }
@@ -19502,8 +19578,10 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 idea: all.filter(i => i.status === 'idea').length,
                 ready: all.filter(i => i.status === 'ready').length,
                 inProgress: all.filter(i => i.status === 'in-progress').length,
+                review: all.filter(i => i.status === 'review').length,
                 done: all.filter(i => i.status === 'done').length,
                 deferred: all.filter(i => i.status === 'deferred').length,
+                stale: all.filter(i => WorkItemService.isStale(i)).length,
             };
         }, [workItems]);
         
@@ -19530,10 +19608,11 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 'idea': 'bg-slate-600 text-slate-300',
                 'ready': 'bg-blue-900/50 text-blue-300',
                 'in-progress': 'bg-amber-900/50 text-amber-300',
+                'review': 'bg-purple-900/50 text-purple-300',
                 'done': 'bg-green-900/50 text-green-300',
                 'deferred': 'bg-slate-700 text-slate-400'
             };
-            const icons = { 'idea': '💡', 'ready': '📋', 'in-progress': '🔨', 'done': '✅', 'deferred': '⏸️' };
+            const icons = { 'idea': '💡', 'ready': '📋', 'in-progress': '🔨', 'review': '📝', 'done': '✅', 'deferred': '⏸️' };
             return (
                 <span className={`px-2 py-0.5 rounded text-xs ${styles[status] || 'bg-slate-600 text-slate-300'}`}>
                     {icons[status] || ''} {status}
@@ -19577,7 +19656,8 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
             const transitions = {
                 'idea': ['ready', 'deferred'],
                 'ready': ['in-progress', 'deferred'],
-                'in-progress': ['done', 'ready', 'deferred'],
+                'in-progress': ['review', 'done', 'deferred'],
+                'review': ['done', 'in-progress'],
                 'done': ['ready'],
                 'deferred': ['idea', 'ready']
             };
@@ -19604,7 +19684,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                     <div>
                         <h1 className="text-2xl font-bold flex items-center gap-2">📋 Backlog</h1>
                         <p className="text-sm text-slate-400 mt-1">
-                            {stats.total} items — {stats.inProgress} in progress, {stats.ready} ready, {stats.idea} ideas
+                            {stats.total} items — {stats.inProgress} in progress, {stats.review > 0 ? `${stats.review} in review, ` : ''}{stats.ready} ready, {stats.idea} ideas
                         </p>
                     </div>
                     <div className="flex gap-2">
@@ -19635,10 +19715,11 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 {stats.total > 0 && (
                     <div className="flex gap-2 mb-4 flex-wrap">
                         {[
-                            { label: 'Active', value: stats.idea + stats.ready + stats.inProgress, filter: 'active', color: 'bg-indigo-600' },
+                            { label: 'Active', value: stats.idea + stats.ready + stats.inProgress + stats.review, filter: 'active', color: 'bg-indigo-600' },
                             { label: 'Ideas', value: stats.idea, filter: 'idea', color: 'bg-slate-600' },
                             { label: 'Ready', value: stats.ready, filter: 'ready', color: 'bg-blue-600' },
                             { label: 'In Progress', value: stats.inProgress, filter: 'in-progress', color: 'bg-amber-600' },
+                            { label: 'In Review', value: stats.review, filter: 'review', color: 'bg-purple-600' },
                             { label: 'Done', value: stats.done, filter: 'done', color: 'bg-green-600' },
                             { label: 'Deferred', value: stats.deferred, filter: 'deferred', color: 'bg-slate-500' },
                         ].map(s => (
@@ -19762,6 +19843,11 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                                                 <PriorityBadge priority={item.priority} />
                                                                 <StatusBadge status={item.status} />
                                                                 <EffortBadge effort={item.effort} />
+                                                                {WorkItemService.isStale(item) && (
+                                                                    <span className="px-1.5 py-0.5 rounded text-xs bg-red-900/40 text-red-400 border border-red-800/50" title={`${WorkItemService.getStaleDays(item)} days in ${item.status}`}>
+                                                                        ⚠ {WorkItemService.getStaleDays(item)}d stale
+                                                                    </span>
+                                                                )}
                                                                 {groupBy !== 'app' && app && (
                                                                     <span className="text-xs text-slate-500">{app.icon} {app.name}</span>
                                                                 )}
