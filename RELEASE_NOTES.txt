@@ -1,3 +1,37 @@
+Command Center v8.55.2 — Streams Evolution: Data Model + Concept Parser
+=========================================================================
+Released: 2026-02-11
+
+Session 1 of the CC Streams Evolution project. Extends the stream data model
+and adds automatic concept extraction from pushed documents.
+
+STREAM DATA MODEL (Analytics Satellite v1.0.1)
+- Extended model: appIds[], project, concepts[], artifacts[], sessions[],
+  tests{}, codeReview{}, openItems[], next
+- Multi-app scope: streams can now span multiple apps
+- Migration: existing streams auto-enriched with safe defaults on load
+- New statuses: planning, testing, archived
+
+STREAM EDITOR ENHANCEMENTS
+- Additional Apps multi-select (chip toggles)
+- Project field with datalist from existing streams
+- Next field (drives session prep)
+- Open Items textarea (one per line)
+- All new status options in dropdown
+
+STREAM CARD BADGES
+- Multi-app count, concept count, open items count, test coverage
+- Stats bar: flex-wrap with planning/testing counts
+
+CONCEPT PARSER (CC Core)
+- parseConcepts(): regex extraction from <!-- cc-concepts --> markers
+- checkPushedDocsForConcepts(): auto-prompt after doc push
+- Hooked into all 3 doc push flows (Deploy All x2, Session Wizard)
+- Deduplication by text when merging into existing stream concepts
+- Console instrumentation: [Concepts] prefix at all decision points
+
+---
+
 Command Center v8.55.0 — Smart Deploy Validation Complete
 ==========================================================
 Released: 2026-02-11

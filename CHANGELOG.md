@@ -1,5 +1,35 @@
 # Command Center — Changelog
 
+## [8.55.2] — 2026-02-11 — Streams Evolution: Data Model + Concept Parser
+
+### Added (Analytics Satellite v1.0.1)
+- **Extended stream data model** — `appIds[]`, `project`, `concepts[]`, `artifacts[]`, `sessions[]`, `tests{}`, `codeReview{}`, `openItems[]`, `next` fields
+- **Multi-app stream scope** — streams can span multiple apps via `appIds[]` (backward compatible with single `appId`)
+- **Stream migration** — `WorkStreamService.migrate()` enriches existing streams with safe defaults on load (no Firebase write)
+- **New status values** — `planning`, `testing`, `archived` added to existing `active`, `paused`, `blocked`, `complete`
+- **StreamEditModal enhancements** — Additional Apps multi-select, Project field with datalist, Next field, Open Items textarea
+- **Stream card evolution badges** — multi-app count, concept count, open items count, test coverage badges
+- **`getByProject()`** — filter streams by project scope
+- **`getActiveConceptCount()`** — count active concepts on a stream
+
+### Added (CC Core v8.55.2)
+- **`parseConcepts(docContent, sourceName)`** — regex parser for `<!-- cc-concepts -->` markers in documents
+- **`checkPushedDocsForConcepts()`** — after doc push, checks for concepts and prompts user to associate with a stream
+- **Concept extraction hooks** — integrated into all 3 doc push flows: Deploy All (both paths) and Session Wizard pushDocsToRepo
+- **WorkStreamService stub extended** — added `update()` method, migration for extended fields, multi-app `filterByApp()`
+- **Prop threading** — `globalStreams` added to DashboardView, `showPrompt` threaded through ProjectsTab → ClaudePrepModal
+
+### Changed (Analytics Satellite v1.0.1)
+- `filterByApp()` now checks both `appId` and `appIds[]`
+- `getActive()` includes `testing` status alongside `active`
+- Stats bar redesigned: flex-wrap layout with Planning, Active, Testing, Blocked, Complete, Items, Alerts
+- ProductBriefGenerator stream filter is multi-app aware
+- Stream edit modal closes on save for updates (was missing)
+- `update()` now logs which fields were changed
+
+### Infrastructure v1.0.1, Quality v1.0.1
+- Version bump for deploy validation (no code changes)
+
 ## [8.55.0] — 2026-02-11 — Smart Deploy Validation Complete
 
 ### Added

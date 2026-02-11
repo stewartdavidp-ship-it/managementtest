@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.55.1">
+    <meta name="version" content="8.55.2">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -1545,13 +1545,26 @@
             ref.on('value', (snapshot) => {
                 const data = snapshot.val();
                 if (data) {
-                    const list = Object.entries(data).map(([id, s]) => ({ id, ...s }));
+                    const list = Object.entries(data).map(([id, s]) => ({
+                        id, ...s,
+                        // Migrate: ensure extended fields exist
+                        appIds: s.appIds || (s.appId ? [s.appId] : []),
+                        concepts: s.concepts || [],
+                        openItems: s.openItems || [],
+                        next: s.next || ''
+                    }));
                     callback(list.sort((a, b) => (a.order || 0) - (b.order || 0)));
                 } else { callback([]); }
             });
             return () => ref.off();
         },
-        filterByApp(streams, appId) { return (streams || []).filter(s => s.appId === appId); }
+        async update(uid, streamId, updates) {
+            const ref = this._ref(uid);
+            if (!ref) return;
+            await ref.child(streamId).update(updates);
+            console.log(`[WorkStreamService] Updated ${streamId} (${Object.keys(updates).join(', ')})`);
+        },
+        filterByApp(streams, appId) { return (streams || []).filter(s => s.appId === appId || (s.appIds && s.appIds.includes(appId))); }
     };
     
     /**
@@ -6221,6 +6234,11 @@
             if (!github) { await showAlert('Configure GitHub token', 'Configuration Required'); return; }
             
             const app = apps[appId];
+            if (!app) {
+                console.error(`[Deploy] App not found: "${appId}". Available:`, Object.keys(apps));
+                await showAlert(`App "${appId}" not found in configuration`, 'Deploy Error');
+                return;
+            }
             // Ensure subPath is set from defaults (localStorage may have empty string from old config)
             const effectiveSubPath = app.subPath || '';
             const appWithSubPath = { ...app, subPath: effectiveSubPath };
@@ -6448,6 +6466,11 @@
             if (files.length === 0) return;
             
             const app = apps[appId];
+            if (!app) {
+                console.error(`[BatchDeploy] App not found: "${appId}". Available:`, Object.keys(apps));
+                await showAlert(`App "${appId}" not found in configuration`, 'Deploy Error');
+                return;
+            }
             const appWithDefaults = {
                 ...app,
                 subPath: app.subPath || ''
@@ -7450,6 +7473,7 @@
                             showPrompt={showPrompt}
                             globalIssues={globalIssues}
                             globalWorkItems={globalWorkItems}
+                            globalStreams={globalStreams}
                             globalSessions={globalSessions}
                             globalActivity={globalActivity}
                             deployments={deployments}
@@ -7461,6 +7485,7 @@
                             onQuickRollback={quickRollback}
                             pendingSessionReturn={pendingSessionReturn}
                             setPendingSessionReturn={setPendingSessionReturn}
+                            updateApp={updateApp}
                         />
                         </>
                     )}
@@ -7489,6 +7514,7 @@
                                 availableRepos={availableRepos}
                                 showAlert={showAlert}
                                 showConfirm={showConfirm}
+                                showPrompt={showPrompt}
                                 onRefreshRepos={refreshRepos}
                                 deployments={deployments}
                                 globalWorkItems={globalWorkItems}
@@ -7627,6 +7653,7 @@
                                     }
                                     
                                     const pushedDocIds = [];
+                                    const actuallyPushedDocs = []; // Only docs whose content changed
                                     for (const [appId, appDocs] of Object.entries(docsByApp)) {
                                         const app = apps[appId];
                                         if (!app) continue;
@@ -7641,8 +7668,15 @@
                                                 // Check for existing file to get SHA
                                                 const existing = await github.getFile(repo, doc.targetPath);
                                                 const sha = existing?.sha || null;
-                                                const action = sha ? 'Update' : 'Add';
                                                 
+                                                // Skip if content is identical to what's in the repo
+                                                if (existing && isDocUnchanged(existing, doc.content)) {
+                                                    console.log(`⏭️ ${doc.name} unchanged, skipping push`);
+                                                    pushedDocIds.push(doc.id); // Still remove from staged
+                                                    continue;
+                                                }
+                                                
+                                                const action = sha ? 'Update' : 'Add';
                                                 await github.createOrUpdateFile(
                                                     repo,
                                                     doc.targetPath,
@@ -7652,6 +7686,7 @@
                                                 );
                                                 console.log(`✅ Pushed ${doc.name} → ${repo}/${doc.targetPath}`);
                                                 pushedDocIds.push(doc.id);
+                                                actuallyPushedDocs.push({ name: doc.name, content: doc.content });
                                             } catch (e) {
                                                 console.error(`❌ Failed to push ${doc.name}:`, e.message);
                                             }
@@ -7660,6 +7695,14 @@
                                     // Remove successfully pushed docs from staged files
                                     if (pushedDocIds.length > 0) {
                                         setStagedFiles(prev => prev.filter(f => !pushedDocIds.includes(f.id)));
+                                        
+                                        // Check actually-changed docs for concepts (skip unchanged)
+                                        if (actuallyPushedDocs.length > 0) {
+                                            checkPushedDocsForConcepts(actuallyPushedDocs, globalStreams, showConfirm, showPrompt, {
+                                                uid: firebaseUid,
+                                                updateStream: WorkStreamService.update.bind(WorkStreamService)
+                                            }).catch(e => console.error('[Concepts] Error during concept check:', e));
+                                        }
                                     }
                                 }
                             }}
@@ -8432,7 +8475,7 @@
     // DASHBOARD VIEW
     // =========================================================================
     
-    function DashboardView({ apps, config, stagedFiles, setStagedFiles, github, onFileDrop, onRemove, onDeploy, onBatchDeploy, onPromote, activeDeployments, removeActiveDeployment, refreshing, onUpdateStagedFile, deployingRepos, showConfirm, showAlert, showPrompt, globalIssues, globalWorkItems, globalSessions, globalActivity, deployments, firebaseUid, setModal, linkIssuesToVersion, setView, rollbackSnapshots, onQuickRollback, pendingSessionReturn, setPendingSessionReturn }) {
+    function DashboardView({ apps, config, stagedFiles, setStagedFiles, github, onFileDrop, onRemove, onDeploy, onBatchDeploy, onPromote, activeDeployments, removeActiveDeployment, refreshing, onUpdateStagedFile, deployingRepos, showConfirm, showAlert, showPrompt, globalIssues, globalWorkItems, globalStreams, globalSessions, globalActivity, deployments, firebaseUid, setModal, linkIssuesToVersion, setView, rollbackSnapshots, onQuickRollback, pendingSessionReturn, setPendingSessionReturn, updateApp }) {
         const [selectedFileIds, setSelectedFileIds] = React.useState(new Set());
         const [deployTarget, setDeployTarget] = React.useState({ appId: 'command-center', target: 'test' });
         const [isDeploying, setIsDeploying] = React.useState(false);
@@ -9039,15 +9082,31 @@
                                             <span>{multiAppValidation.overallSeverity === 'error' ? '🛑' : multiAppValidation.overallSeverity === 'warning' ? '⚠️' : '✅'}</span>
                                             <span className="font-medium">{multiAppValidation.summary}</span>
                                         </div>
-                                        {multiAppValidation.crossAppIssues.length > 0 && (
-                                            <div className="mt-2 space-y-1 text-xs">
-                                                {multiAppValidation.crossAppIssues.map((issue, i) => (
-                                                    <div key={i} className={issue.severity === 'error' ? 'text-red-300' : issue.severity === 'warning' ? 'text-amber-300' : 'text-slate-400'}>
-                                                        {issue.severity === 'error' ? '✗' : '⚠'} {issue.title}: {issue.detail}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
+                                        {multiAppValidation.crossAppIssues.length > 0 && (() => {
+                                            const errorWarnings = multiAppValidation.crossAppIssues.filter(i => i.severity === 'error' || i.severity === 'warning');
+                                            const infoIssues = multiAppValidation.crossAppIssues.filter(i => i.severity === 'info');
+                                            return (
+                                                <div className="mt-2 space-y-1 text-xs">
+                                                    {errorWarnings.map((issue, i) => (
+                                                        <div key={`ew${i}`} className={issue.severity === 'error' ? 'text-red-300' : 'text-amber-300'}>
+                                                            {issue.severity === 'error' ? '✗' : '⚠'} {issue.title}: {issue.detail}
+                                                        </div>
+                                                    ))}
+                                                    {infoIssues.length > 0 && (
+                                                        <details className="text-slate-400">
+                                                            <summary className="cursor-pointer select-none hover:text-slate-300">
+                                                                ℹ️ {infoIssues.length} info note{infoIssues.length !== 1 ? 's' : ''}: {infoIssues.map(i => i.title).join('; ')}
+                                                            </summary>
+                                                            <div className="mt-1 pl-5 space-y-0.5">
+                                                                {infoIssues.map((issue, i) => (
+                                                                    <div key={`info${i}`} className="text-slate-500">{issue.detail}</div>
+                                                                ))}
+                                                            </div>
+                                                        </details>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
                                 )}
                                 
@@ -9151,6 +9210,8 @@
                                             );
                                             if (!confirmed) return;
                                             
+                                            setBatchActionRunning(true);
+                                            try {
                                             console.log('=== DEPLOY ALL START ===');
                                             console.log(`[SmartDeploy] Deploying ${appIds.length} apps:`, appNames);
                                             
@@ -9195,14 +9256,43 @@
                                                     }
                                                 }
                                             }
+                                            console.log('=== DEPLOY ALL COMPLETE ===');
+                                            
+                                            // Check deployed docs for concepts
+                                            const docFiles = stagedFiles
+                                                .filter(f => f.fileAction === 'push-doc' && f.content && typeof f.content === 'string')
+                                                .map(f => ({ name: f.name, content: f.content }));
+                                            if (docFiles.length > 0 && showPrompt) {
+                                                checkPushedDocsForConcepts(docFiles, globalStreams, showConfirm, showPrompt, {
+                                                    uid: firebaseUid,
+                                                    updateStream: WorkStreamService.update.bind(WorkStreamService)
+                                                }).catch(e => console.error('[Concepts] Error during concept check:', e));
+                                            }
+                                            } catch (e) {
+                                                console.error('[SmartDeploy] Deploy All failed:', e);
+                                                await showAlert(`Deploy failed: ${e.message}`, '❌ Error');
+                                            } finally {
+                                                setBatchActionRunning(false);
+                                            }
                                         }}
-                                        disabled={multiAppValidation?.overallSeverity === 'error' || multiAppCheckingVersions}
-                                        className="px-6 py-2 bg-green-600 hover:bg-green-500 disabled:opacity-40 disabled:hover:bg-green-600 rounded-lg font-medium flex items-center gap-2"
+                                        disabled={multiAppValidation?.overallSeverity === 'error' || multiAppCheckingVersions || batchActionRunning}
+                                        className={`px-6 py-2 rounded-lg font-medium flex items-center gap-2 ${
+                                            batchActionRunning 
+                                                ? 'bg-emerald-700 cursor-wait' 
+                                                : 'bg-green-600 hover:bg-green-500 disabled:opacity-40 disabled:hover:bg-green-600'
+                                        }`}
                                     >
-                                        🚀 Deploy All ({appIds.length} app{appIds.length !== 1 ? 's' : ''}{(() => {
+                                        {batchActionRunning ? (
+                                            <>
+                                                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                                Deploying...
+                                            </>
+                                        ) : (
+                                            <>🚀 Deploy All ({appIds.length} app{appIds.length !== 1 ? 's' : ''}{(() => {
                                             const totalDocs = stagedFiles.filter(f => f.fileAction === 'push-doc').length;
                                             return totalDocs > 0 ? ` + ${totalDocs} doc${totalDocs !== 1 ? 's' : ''}` : '';
-                                        })()})
+                                        })()})</>
+                                        )}
                                     </button>
                                     
                                     {multiAppCheckingVersions && (
@@ -9628,10 +9718,19 @@
                                                     if (repo) {
                                                         console.log('Pushing docs to:', repo);
                                                         const pushedDocIds = [];
+                                                        const actuallyPushedDocs = [];
                                                         for (const doc of selectedDocFiles) {
                                                             try {
                                                                 const existing = await github.getFile(repo, doc.targetPath);
                                                                 const sha = existing?.sha || null;
+                                                                
+                                                                // Skip if content is identical to what's in the repo
+                                                                if (existing && isDocUnchanged(existing, doc.content)) {
+                                                                    console.log(`⏭️ ${doc.name} unchanged, skipping push`);
+                                                                    pushedDocIds.push(doc.id);
+                                                                    continue;
+                                                                }
+                                                                
                                                                 await github.createOrUpdateFile(
                                                                     repo,
                                                                     doc.targetPath,
@@ -9641,12 +9740,21 @@
                                                                 );
                                                                 console.log(`✅ Pushed ${doc.name} → ${repo}/${doc.targetPath}`);
                                                                 pushedDocIds.push(doc.id);
+                                                                actuallyPushedDocs.push({ name: doc.name, content: doc.content });
                                                             } catch (e) {
                                                                 console.error(`❌ Failed to push ${doc.name}:`, e.message);
                                                             }
                                                         }
                                                         if (pushedDocIds.length > 0) {
                                                             setStagedFiles(prev => prev.filter(f => !pushedDocIds.includes(f.id)));
+                                                            
+                                                            // Check actually-changed docs for concepts (skip unchanged)
+                                                            if (actuallyPushedDocs.length > 0) {
+                                                                checkPushedDocsForConcepts(actuallyPushedDocs, globalStreams, showConfirm, showPrompt, {
+                                                                    uid: firebaseUid,
+                                                                    updateStream: WorkStreamService.update.bind(WorkStreamService)
+                                                                }).catch(e => console.error('[Concepts] Error during concept check:', e));
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -10775,7 +10883,7 @@
                 const versionList = entries.map(e => `${e.name} v${e.version}`).join(', ');
                 crossAppIssues.push({
                     id: 'cross-app-version-consistency',
-                    severity: 'warning',
+                    severity: 'info',
                     title: `Version scheme mismatch in "${project}"`,
                     detail: `Apps have different major versions: ${versionList}`,
                     fix: 'This is acceptable for satellite apps — just noting the difference'
@@ -10784,24 +10892,44 @@
         }
 
         // Rule: shared-file-new-to-repo — warn when shared files don't exist in the repo yet
+        // Docs (docs/*.md, docs/*.txt) are info-level, NO API call needed — just count them.
+        // Actual shared files (shared/*) get an API check and show as warning.
         if (github) {
+            const newDocFiles = [];
             for (const [repoKey, bucket] of Object.entries(resolvedRepos)) {
                 for (const file of (bucket.sharedFiles || [])) {
-                    try {
-                        const exists = await github.fileExists(bucket.repo, file.repoPath);
-                        if (!exists) {
-                            crossAppIssues.push({
-                                id: 'shared-file-new',
-                                severity: 'warning',
-                                title: `New shared file: ${file.relativePath}`,
-                                detail: `${file.repoPath} does not exist in ${bucket.repo.split('/').pop()} yet`,
-                                fix: 'File will be created on deploy — verify the path is correct'
-                            });
+                    const isDoc = /^docs\//.test(file.relativePath) && /\.(md|txt)$/i.test(file.relativePath);
+                    if (isDoc) {
+                        // Doc files: just collect the name, no API call
+                        newDocFiles.push(file.relativePath);
+                    } else {
+                        // Non-doc shared files: check if they exist in repo
+                        try {
+                            const exists = await github.fileExists(bucket.repo, file.repoPath);
+                            if (!exists) {
+                                crossAppIssues.push({
+                                    id: 'shared-file-new',
+                                    severity: 'warning',
+                                    title: `New shared file: ${file.relativePath}`,
+                                    detail: `${file.repoPath} does not exist in ${bucket.repo.split('/').pop()} yet`,
+                                    fix: 'File will be created on deploy — verify the path is correct'
+                                });
+                            }
+                        } catch (e) {
+                            // Skip check on error — don't block validation
                         }
-                    } catch (e) {
-                        // Skip check on error — don't block validation
                     }
                 }
+            }
+            // Collapse all doc files into a single info issue (no API calls made)
+            if (newDocFiles.length > 0) {
+                crossAppIssues.push({
+                    id: 'new-docs-info',
+                    severity: 'info',
+                    title: `${newDocFiles.length} new doc${newDocFiles.length !== 1 ? 's' : ''} will be created`,
+                    detail: newDocFiles.join(', '),
+                    fix: 'Files will be created on deploy'
+                });
             }
         }
 
@@ -16200,7 +16328,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
     // =========================================================================
     // PROJECTS TAB (v8.8.0) — Replaces Apps tab in Configure
     // =========================================================================
-    function ProjectsTab({ config, updateConfig, activeEnvs, envColors, github, githubOwner, availableRepos, showAlert, showConfirm, onRefreshRepos, deployments, globalWorkItems, firebaseUid, globalStreams }) {
+    function ProjectsTab({ config, updateConfig, activeEnvs, envColors, github, githubOwner, availableRepos, showAlert, showConfirm, showPrompt, onRefreshRepos, deployments, globalWorkItems, firebaseUid, globalStreams }) {
         const [expandedProject, setExpandedProject] = React.useState(null);
         const [editingApp, setEditingApp] = React.useState(null);
         const [editingProject, setEditingProject] = React.useState(null);
@@ -16607,6 +16735,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                         deployments={deployments || []}
                         onClose={() => setPrepApp(null)}
                         showAlert={showAlert}
+                        showPrompt={showPrompt}
                         globalWorkItems={globalWorkItems}
                         firebaseUid={firebaseUid}
                         globalStreams={globalStreams}
@@ -16935,6 +17064,165 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
     // Required docs for a full doc set (per CLAUDE-PREP-STANDARD)
     const REQUIRED_DOCS = ['CONTEXT.md', 'PROJECT_PLAN.md', 'CHANGELOG.md', 'RELEASE_NOTES.txt'];
     
+    // =========================================================================
+    // CONCEPT PARSER (Streams Evolution v8.55.2)
+    // Extracts key concepts from <!-- cc-concepts --> markers in documents.
+    // Called after doc push to prompt user for stream association.
+    // =========================================================================
+    
+    /**
+     * Parse concepts from document content using cc-concepts markers.
+     * Returns array of concept objects ready for stream storage.
+     * 
+     * Format:
+     *   <!-- cc-concepts scope="deploy,packaging" -->
+     *   - RULE: Path in zip = path in repo.
+     *   - DECISION: gs-active is dev archive.
+     *   <!-- /cc-concepts -->
+     */
+    function parseConcepts(docContent, sourceName) {
+        const concepts = [];
+        if (!docContent || typeof docContent !== 'string') return concepts;
+        
+        // Match all cc-concepts blocks (there may be multiple)
+        const blockRegex = /<!--\s*cc-concepts\s*(.*?)\s*-->([\s\S]*?)<!--\s*\/cc-concepts\s*-->/g;
+        let blockMatch;
+        
+        while ((blockMatch = blockRegex.exec(docContent)) !== null) {
+            const attrString = blockMatch[1] || '';
+            const blockContent = blockMatch[2] || '';
+            
+            // Parse scope from attributes: scope="deploy,packaging"
+            const scopeMatch = attrString.match(/scope\s*=\s*"([^"]*)"/);
+            const scope = scopeMatch ? scopeMatch[1].split(',').map(s => s.trim()).filter(Boolean) : [];
+            
+            // Parse individual concept lines: - TYPE: text
+            const lineRegex = /^[\s]*-\s*(RULE|DECISION|CONSTRAINT|PROCESS|LESSON|OPEN|FIX):\s*(.+)$/gm;
+            let lineMatch;
+            
+            while ((lineMatch = lineRegex.exec(blockContent)) !== null) {
+                const type = lineMatch[1].toLowerCase();
+                const text = lineMatch[2].trim();
+                
+                concepts.push({
+                    id: `C-${Date.now()}-${concepts.length}`,
+                    type,
+                    text,
+                    scope,
+                    source: sourceName || 'unknown',
+                    date: new Date().toISOString().split('T')[0],
+                    status: 'active'
+                });
+            }
+        }
+        
+        console.log(`[Concepts] Extracted ${concepts.length} concepts from ${sourceName || 'document'}${concepts.length > 0 ? ': ' + concepts.map(c => c.type.toUpperCase()).join(', ') : ''}`);
+        return concepts;
+    }
+    
+    /**
+     * Check pushed docs for concepts and prompt user to associate with a stream.
+     * Called after successful doc push.
+     * 
+     * @param {Array} pushedDocs - Array of {name, content} objects that were pushed
+     * @param {Array} streams - Current global streams list
+     * @param {Function} showConfirm - Dialog function  
+     * @param {Function} showPrompt - Prompt dialog function
+     * @param {Object} firebaseRefs - {uid, updateStream} for saving
+     */
+    async function checkPushedDocsForConcepts(pushedDocs, streams, showConfirm, showPrompt, firebaseRefs) {
+        if (!pushedDocs || pushedDocs.length === 0 || !streams || streams.length === 0) return;
+        
+        // Collect all concepts from all pushed docs
+        const allConcepts = [];
+        for (const doc of pushedDocs) {
+            if (!doc.content || typeof doc.content !== 'string') continue;
+            const concepts = parseConcepts(doc.content, doc.name);
+            if (concepts.length > 0) {
+                allConcepts.push(...concepts);
+            }
+        }
+        
+        if (allConcepts.length === 0) return;
+        
+        console.log(`[Concepts] Found ${allConcepts.length} total concepts in ${pushedDocs.length} pushed doc(s)`);
+        
+        // Build stream selection list
+        const activeStreams = streams.filter(s => s.status === 'active' || s.status === 'planning' || s.status === 'testing');
+        if (activeStreams.length === 0) {
+            console.log('[Concepts] No active streams to attach concepts to');
+            return;
+        }
+        
+        // Summarize by type
+        const typeCounts = {};
+        allConcepts.forEach(c => { typeCounts[c.type] = (typeCounts[c.type] || 0) + 1; });
+        const typeSummary = Object.entries(typeCounts).map(([t, n]) => `${n} ${t.toUpperCase()}`).join(', ');
+        
+        // Build stream options string
+        const streamOptions = activeStreams.map((s, i) => `${i + 1}. ${s.name} (${s.status})`).join('\n');
+        
+        const result = await showPrompt(
+            `Found ${allConcepts.length} concepts (${typeSummary}).\n\nAdd to which stream?\n\n${streamOptions}\n\nEnter number (or leave blank to skip):`,
+            '',
+            `💡 ${allConcepts.length} Concepts Found`
+        );
+        
+        if (!result || !result.trim()) {
+            console.log('[Concepts] User skipped concept import');
+            return;
+        }
+        
+        const idx = parseInt(result.trim()) - 1;
+        if (isNaN(idx) || idx < 0 || idx >= activeStreams.length) {
+            console.log('[Concepts] Invalid stream selection:', result);
+            return;
+        }
+        
+        const targetStream = activeStreams[idx];
+        
+        // Merge with existing concepts, avoiding duplicates by text
+        const existingTexts = new Set((targetStream.concepts || []).map(c => c.text.toLowerCase()));
+        const newConcepts = allConcepts.filter(c => !existingTexts.has(c.text.toLowerCase()));
+        const dupeCount = allConcepts.length - newConcepts.length;
+        
+        if (newConcepts.length === 0) {
+            console.log(`[Concepts] All ${allConcepts.length} concepts already exist on stream ${targetStream.id}`);
+            return;
+        }
+        
+        const mergedConcepts = [...(targetStream.concepts || []), ...newConcepts];
+        
+        // Save to Firebase
+        if (firebaseRefs?.uid && firebaseRefs?.updateStream) {
+            await firebaseRefs.updateStream(firebaseRefs.uid, targetStream.id, { concepts: mergedConcepts });
+            console.log(`[Concepts] Added ${newConcepts.length} concepts to stream ${targetStream.id}: "${targetStream.name}"${dupeCount > 0 ? ` (${dupeCount} duplicates skipped)` : ''}`);
+        }
+    }
+    
+    /**
+     * Check if a doc's content matches what's already in the repo.
+     * Returns true if unchanged (skip the push), false if new or different.
+     * 
+     * @param {Object} existing - GitHub file object from getFile() (has .content base64 + .sha)
+     * @param {string} newContent - The local doc content to compare
+     * @returns {boolean} true if content is identical
+     */
+    function isDocUnchanged(existing, newContent) {
+        if (!existing || !existing.content) return false; // File doesn't exist or no content → push it
+        try {
+            // GitHub returns base64-encoded content (may have newlines in the base64 string)
+            const decoded = decodeURIComponent(escape(atob(existing.content.replace(/\n/g, ''))));
+            // Normalize line endings for comparison
+            const normalizedExisting = decoded.replace(/\r\n/g, '\n').trim();
+            const normalizedNew = newContent.replace(/\r\n/g, '\n').trim();
+            return normalizedExisting === normalizedNew;
+        } catch (e) {
+            console.warn('[DocPush] Content comparison failed, will push:', e.message);
+            return false;
+        }
+    }
+
     // =========================================================================
     // UNIFIED PACKAGE VALIDATION (v8.36.0)
     // Selection-driven: runs on selected files to determine intent and issues.
@@ -17782,7 +18070,7 @@ ${repoStr || '- *No repos configured*'}
         );
     }
     
-    function ClaudePrepModal({ app, config, github, githubOwner, deployments, onClose, showAlert, globalWorkItems, firebaseUid, globalStreams }) {
+    function ClaudePrepModal({ app, config, github, githubOwner, deployments, onClose, showAlert, showPrompt, globalWorkItems, firebaseUid, globalStreams }) {
         // === Wizard State (v8.37.0: 3-step Session Wizard) ===
         const [wizardStep, setWizardStep] = React.useState(1); // 1: Work Items, 2: Session Type + Context, 3: Generate
         const [phase, setPhase] = React.useState('wizard'); // wizard | building | done | error
@@ -18216,18 +18504,42 @@ ${repoStr || '- *No repos configured*'}
             if (!repo) return;
             setUploading(true);
             setUploadLog([]);
+            const actuallyPushedDocs = [];
+            let skippedCount = 0;
             for (const doc of uploadFiles) {
                 try {
+                    // For existing files, check if content actually changed
+                    if (doc.existing) {
+                        const existing = await github.getFile(repo, doc.targetPath);
+                        if (existing && isDocUnchanged(existing, doc.content)) {
+                            setUploadLog(prev => [...prev, { msg: `\u23ed\ufe0f ${doc.name} unchanged, skipping`, type: 'info' }]);
+                            skippedCount++;
+                            continue;
+                        }
+                    }
+                    
                     const action = doc.existing ? 'Updating' : 'Creating';
                     setUploadLog(prev => [...prev, { msg: `\ud83d\udce4 ${action} ${doc.targetPath}...`, type: 'info' }]);
                     await github.createOrUpdateFile(repo, doc.targetPath, doc.content, `${doc.existing ? 'Update' : 'Add'} ${doc.name} via Command Center`, doc.sha);
                     setUploadLog(prev => [...prev, { msg: `\u2705 ${doc.name} pushed to ${doc.targetPath}`, type: 'success' }]);
+                    actuallyPushedDocs.push({ name: doc.name, content: doc.content });
                 } catch (e) {
                     setUploadLog(prev => [...prev, { msg: `\u274c Failed to push ${doc.name}: ${e.message}`, type: 'error' }]);
                 }
             }
             setUploading(false);
-            setUploadLog(prev => [...prev, { msg: '\ud83c\udf89 Done! Docs are now in the repo.', type: 'success' }]);
+            const doneMsg = skippedCount > 0
+                ? `\ud83c\udf89 Done! ${actuallyPushedDocs.length} pushed, ${skippedCount} unchanged.`
+                : '\ud83c\udf89 Done! Docs are now in the repo.';
+            setUploadLog(prev => [...prev, { msg: doneMsg, type: 'success' }]);
+            
+            // Check actually-changed docs for concepts (skip unchanged)
+            if (actuallyPushedDocs.length > 0 && showPrompt) {
+                checkPushedDocsForConcepts(actuallyPushedDocs, globalStreams, null, showPrompt, {
+                    uid: firebaseUid,
+                    updateStream: WorkStreamService.update.bind(WorkStreamService)
+                }).catch(e => console.error('[Concepts] Error during concept check:', e));
+            }
         };
         
         const logColors = { info: 'text-slate-400', success: 'text-green-400', warn: 'text-amber-400', error: 'text-red-400' };
