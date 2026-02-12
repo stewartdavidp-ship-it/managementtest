@@ -30,7 +30,11 @@
 
     <script type="text/babel">
     console.log(`Command Center v${document.querySelector('meta[name="version"]')?.content || '?'} starting...`);
-    
+
+    // Test mode: swap real services with mocks when running under Playwright
+    const IS_TEST_MODE = window.__CC_TEST_MODE === true;
+    if (IS_TEST_MODE) console.log('[CC] Running in TEST MODE — using mock services');
+
     // =========================================================================
     // SATELLITE SECRETS BOOTSTRAP (v8.49.0)
     // Populate gs_* keys from existing cc_* keys for satellite app access.
@@ -77,22 +81,28 @@
         'stewartdavidp-ship-it/quote-info': 'quotle.info'
     };
     
-    // Initialize Firebase
+    // Initialize Firebase (or use mocks in test mode)
     let firebaseApp = null;
     let firebaseAuth = null;
     let firebaseDb = null;
-    
-    try {
-        if (!firebase.apps.length) {
-            firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
-        } else {
-            firebaseApp = firebase.apps[0];
+
+    if (IS_TEST_MODE && window.MockFirebaseDb) {
+        firebaseDb = window.MockFirebaseDb;
+        firebaseAuth = window.MockFirebaseAuth;
+        console.log('[CC] Using mock Firebase services');
+    } else {
+        try {
+            if (!firebase.apps.length) {
+                firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
+            } else {
+                firebaseApp = firebase.apps[0];
+            }
+            firebaseAuth = firebase.auth();
+            firebaseDb = firebase.database();
+            console.log('Firebase initialized successfully');
+        } catch (e) {
+            console.error('Firebase init error:', e);
         }
-        firebaseAuth = firebase.auth();
-        firebaseDb = firebase.database();
-        console.log('Firebase initialized successfully');
-    } catch (e) {
-        console.error('Firebase init error:', e);
     }
     
     // =========================================================================
@@ -2388,6 +2398,7 @@
         },
         isConfigured() { return !!this.getApiKey(); },
         async call({ model = 'claude-haiku-4-5-20251001', system, userMessage, maxTokens = 4096 }) {
+            if (IS_TEST_MODE && window.MockClaudeAPIService) return window.MockClaudeAPIService.call({ model, system, userMessage, maxTokens });
             const apiKey = this.getApiKey();
             if (!apiKey) throw new Error('Anthropic API key not configured. Go to Settings → Anthropic API Key to add it.');
             const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -6380,7 +6391,7 @@
         const appsRef = React.useRef(apps);
         React.useEffect(() => { appsRef.current = apps; }, [apps]);
         
-        const github = React.useMemo(() => githubToken ? new GitHubAPI(githubToken) : null, [githubToken]);
+        const github = React.useMemo(() => IS_TEST_MODE && window.MockGitHubAPI ? window.MockGitHubAPI : (githubToken ? new GitHubAPI(githubToken) : null), [githubToken]);
         
         // Persist
         React.useEffect(() => { try { if (githubToken) { localStorage.setItem('cc_token', githubToken); localStorage.setItem('gs_github_token', githubToken); } } catch {} }, [githubToken]);
@@ -8369,7 +8380,7 @@
         };
         
         return (
-            <div className="min-h-screen">
+            <div className="min-h-screen" data-testid="app-loaded">
                 <header className="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
                     <div className="max-w-6xl mx-auto px-4 py-3">
                         {/* Top row: Logo and main nav */}
@@ -17873,7 +17884,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
 
                 {/* Filter bar */}
                 <div className="flex gap-2 mb-4 flex-wrap">
-                    <select value={stateFilter} onChange={e => setStateFilter(e.target.value)}
+                    <select value={stateFilter} onChange={e => setStateFilter(e.target.value)} data-testid="state-filter"
                         className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
                         <option value="all">All States ({stats.total})</option>
                         <option value="new">New ({stats.new})</option>
@@ -17881,7 +17892,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                         <option value="reviewed">Reviewed ({stats.reviewed})</option>
                         <option value="checked">Checked ({stats.checked})</option>
                     </select>
-                    <select value={repoFilter} onChange={e => setRepoFilter(e.target.value)}
+                    <select value={repoFilter} onChange={e => setRepoFilter(e.target.value)} data-testid="repo-filter"
                         className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
                         <option value="all">All Repos</option>
                         {repos.map(r => <option key={r} value={r}>{r.split('/').pop()}</option>)}
@@ -17906,7 +17917,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                         {filteredJobs.map(job => {
                             const isExpanded = expandedJobId === job.id;
                             return (
-                                <div key={job.id} className="bg-slate-800/50 border border-slate-700 rounded-lg overflow-hidden">
+                                <div key={job.id} data-testid={`job-card-${job.id}`} className="bg-slate-800/50 border border-slate-700 rounded-lg overflow-hidden">
                                     {/* Card header */}
                                     <div className="p-3 cursor-pointer hover:bg-slate-700/30" onClick={() => setExpandedJobId(isExpanded ? null : job.id)}>
                                         <div className="flex items-center gap-2 mb-1">
@@ -18153,7 +18164,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 {/* Bundle Assembly Modal */}
                 {bundleModal && (
                     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={() => !bundleModal.active && setBundleModal(null)}>
-                        <div className="bg-slate-800 border border-slate-600 rounded-lg p-6 max-w-lg w-full mx-4" onClick={e => e.stopPropagation()}>
+                        <div data-testid="bundle-progress" className="bg-slate-800 border border-slate-600 rounded-lg p-6 max-w-lg w-full mx-4" onClick={e => e.stopPropagation()}>
                             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
                                 📦 Bundle Assembly
                                 {bundleModal.active && <span className="text-xs text-slate-400 animate-pulse">Processing...</span>}
@@ -23816,7 +23827,7 @@ The developer uses Claude for iterative development — each session should:
                         <div>
                             <label className="text-sm text-slate-300 block mb-1">Unclassified Nudge Threshold</label>
                             <p className="text-xs text-slate-500 mb-1">Show a nudge banner when this many jobs lack classification.</p>
-                            <input type="number" min="1" max="100"
+                            <input type="number" min="1" max="100" data-testid="nudge-threshold"
                                 value={completionFileSettings?.unclassifiedNudgeThreshold || 5}
                                 onChange={e => { if (firebaseUid) CompletionFileSettings.save(firebaseUid, { ...completionFileSettings, unclassifiedNudgeThreshold: parseInt(e.target.value) || 5 }); }}
                                 className="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm w-24" />
