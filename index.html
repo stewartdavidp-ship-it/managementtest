@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.59.0">
+    <meta name="version" content="8.60.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2459,6 +2459,18 @@
             const system = `You are helping classify unplanned development work into a project's ODRC (Opens, Decisions, Rules, Constraints) framework. You will generate a classification prompt that another AI assistant will use to: (1) determine if this work resolves any existing OPENs, (2) identify if it aligns with existing DECISIONs or RULEs, (3) suggest new OPENs if gaps were discovered, and (4) categorize the work type (UX fix, performance, integration, bug fix, tech debt, feature, refactor). Output only the classification prompt in markdown.\n\nIMPORTANT: At the end of the prompt, instruct the reviewer to output structured ODRC recommendations in this exact format:\n\n## ODRC Updates\n- RESOLVE OPEN: "description" → matched to concept_id {id}\n- NEW OPEN: "description" → tag to Idea {name}\n- NEW OPEN: "description" → untagged\n- NEW DECISION: "description"`;
             const userMessage = `Generate a classification prompt for this unplanned work:\n\n## Task\n${completionJob.task}\n\n## Status\n${completionJob.status}\n\n## Files Changed\n${(completionJob.files || []).map(f => `- ${f.path} (${f.action})`).join('\n')}\n\n## Full ODRC Landscape\n${odrcSummary}`;
             return await ClaudeAPIService.call({ system, userMessage });
+        },
+
+        async generateBatchClassificationPrompt(jobs, odrcSummary) {
+            const system = `You are helping classify multiple pieces of unplanned development work into a project's ODRC (Opens, Decisions, Rules, Constraints) framework. For each job, determine: (1) if it resolves any existing OPENs, (2) if it aligns with existing DECISIONs or RULEs, (3) what new OPENs were discovered, and (4) the work category (UX fix, performance, integration, bug fix, tech debt, feature, refactor).\n\nOutput your analysis for each job, then a consolidated ODRC Updates section at the end using this exact format:\n\n## ODRC Updates\n- RESOLVE OPEN: "description" → matched to concept_id {id}\n- NEW OPEN: "description" → tag to Idea {name}\n- NEW OPEN: "description" → untagged\n- NEW DECISION: "description"`;
+            const jobSummaries = jobs.map((job, i) => {
+                let summary = `### Job ${i + 1}: ${job.task}\nStatus: ${job.status}\nFiles: ${(job.files || []).map(f => f.path).join(', ')}\nCommits: ${(job.commits || []).map(c => c.message).join('; ')}`;
+                if (job.unexpectedFindings?.length) summary += `\nUnexpected: ${job.unexpectedFindings.join('; ')}`;
+                if (job.unresolved?.length) summary += `\nUnresolved: ${job.unresolved.map(u => u.item).join('; ')}`;
+                return summary;
+            }).join('\n\n');
+            const userMessage = `Classify the following ${jobs.length} unplanned jobs:\n\n${jobSummaries}\n\n## Full ODRC Landscape\n${odrcSummary}`;
+            return await ClaudeAPIService.call({ system, userMessage, maxTokens: 8192 });
         }
     };
 
@@ -2587,6 +2599,124 @@
                 ? '1. **Correctness** — Does the implementation match the task?\n2. **Rule compliance** — Were all RULEs followed?\n3. **Side effects** — Could changes break anything?\n4. **ODRC alignment** — Are claimed resolutions accurate?\n5. **Completeness** — Is the task fully done?'
                 : '1. **Match to existing OPENs** — Does this resolve any?\n2. **Categorize** — What type of work? (UX fix, performance, bug fix, feature, refactor)\n3. **New OPENs** — Any new questions or gaps?';
             return `${header}\n\n*Static fallback — Claude API call failed during assembly.*\n\n## Instructions\n\n${instructions}\n\n## ODRC Update Format\n\n\`\`\`\n## ODRC Updates\n- RESOLVE OPEN: "description" → matched to concept_id {id}\n- NEW OPEN: "description" → tag to Idea {name}\n- NEW DECISION: "description"\n\`\`\``;
+        }
+    };
+
+    // =========================================================================
+    // ORPHAN DETECTION SERVICE (v8.60.0 — Phase 3)
+    // =========================================================================
+
+    const OrphanDetectionService = {
+        _ref(uid) {
+            return firebase.database().ref(`command-center/${uid}/orphanCommits`);
+        },
+        async create(uid, orphanData) {
+            const ref = this._ref(uid).push();
+            const record = { ...orphanData, id: ref.key };
+            await ref.set(record);
+            console.log('[CC] OrphanDetectionService.create:', record.commitSha?.slice(0, 7));
+            return record;
+        },
+        async getAll(uid) {
+            const snap = await this._ref(uid).once('value');
+            const val = snap.val();
+            return val ? Object.values(val) : [];
+        },
+        async getByRepo(uid, repoFullName) {
+            const all = await this.getAll(uid);
+            return all.filter(o => o.repoFullName === repoFullName);
+        },
+        async updateState(uid, orphanId, newState) {
+            await this._ref(uid).child(orphanId).update({ state: newState });
+            console.log('[CC] OrphanDetectionService.updateState:', orphanId, '->', newState);
+        },
+        listen(uid, callback) {
+            const ref = this._ref(uid);
+            const handler = (snap) => {
+                const val = snap.val();
+                callback(val ? Object.values(val) : []);
+            };
+            ref.on('value', handler);
+            return () => ref.off('value', handler);
+        }
+    };
+
+    // =========================================================================
+    // ODRC UPDATE INGESTION SERVICE (v8.60.0 — Phase 3)
+    // =========================================================================
+
+    const ODRCUpdateIngestionService = {
+        // Parse structured ODRC update text into actionable items
+        // Tolerant of minor format variations (quotes, arrow styles, whitespace)
+        parse(text) {
+            const updates = [];
+            const lines = text.split('\n').map(l => l.trim()).filter(l => l.startsWith('- '));
+
+            for (const line of lines) {
+                // Normalize arrow formats: →, ->, ==>
+                const normalized = line.replace(/\s*(?:→|->|==>)\s*/g, ' → ');
+
+                // RESOLVE OPEN: "desc" → matched to concept_id xyz
+                const resolveMatch = normalized.match(/^- RESOLVE OPEN:\s*"?(.+?)"?\s*→\s*matched to concept_id\s+(.+)$/i);
+                if (resolveMatch) {
+                    updates.push({ action: 'resolve', type: 'OPEN', description: resolveMatch[1].trim(), conceptId: resolveMatch[2].trim() });
+                    continue;
+                }
+
+                // NEW {TYPE}: "desc" → tag to Idea {name}
+                const newTaggedMatch = normalized.match(/^- NEW (OPEN|DECISION|RULE|CONSTRAINT):\s*"?(.+?)"?\s*→\s*tag to Idea\s+(.+)$/i);
+                if (newTaggedMatch) {
+                    updates.push({ action: 'create', type: newTaggedMatch[1].toUpperCase(), description: newTaggedMatch[2].trim(), targetIdea: newTaggedMatch[3].trim() });
+                    continue;
+                }
+
+                // NEW {TYPE}: "desc" → untagged
+                const newUntaggedMatch = normalized.match(/^- NEW (OPEN|DECISION|RULE|CONSTRAINT):\s*"?(.+?)"?\s*→\s*untagged$/i);
+                if (newUntaggedMatch) {
+                    updates.push({ action: 'create', type: newUntaggedMatch[1].toUpperCase(), description: newUntaggedMatch[2].trim(), targetIdea: null });
+                    continue;
+                }
+
+                // NEW {TYPE}: "desc" (no routing specified)
+                const newSimpleMatch = normalized.match(/^- NEW (OPEN|DECISION|RULE|CONSTRAINT):\s*"?(.+?)"?\s*$/i);
+                if (newSimpleMatch) {
+                    updates.push({ action: 'create', type: newSimpleMatch[1].toUpperCase(), description: newSimpleMatch[2].trim(), targetIdea: null });
+                    continue;
+                }
+
+                // Log unparseable lines
+                if (line.includes('OPEN') || line.includes('DECISION') || line.includes('RULE') || line.includes('CONSTRAINT')) {
+                    console.log('[CC] ODRCUpdateIngestionService: unparseable line:', line);
+                }
+            }
+
+            return updates;
+        },
+
+        // Execute confirmed updates against Firebase
+        async execute(uid, updates, globalIdeas) {
+            const results = [];
+            for (const update of updates) {
+                try {
+                    if (update.action === 'resolve' && update.conceptId) {
+                        await ConceptManager.resolve(uid, update.conceptId);
+                        results.push({ ...update, status: 'success' });
+                    } else if (update.action === 'create') {
+                        let ideaId = null;
+                        if (update.targetIdea) {
+                            const idea = globalIdeas.find(i => i.name.toLowerCase().includes(update.targetIdea.toLowerCase()));
+                            ideaId = idea?.id || null;
+                        }
+                        // Use overrideIdeaId if user selected a different idea in the UI
+                        const finalIdeaId = update.overrideIdeaId !== undefined ? update.overrideIdeaId : ideaId;
+                        await ConceptManager.create(uid, { type: update.type, content: update.description, ideaOrigin: finalIdeaId, scopeTags: [] });
+                        results.push({ ...update, status: 'success', resolvedIdeaId: finalIdeaId });
+                    }
+                } catch (e) {
+                    results.push({ ...update, status: 'error', error: e.message });
+                }
+            }
+            return results;
         }
     };
 
@@ -5010,6 +5140,18 @@
             
             return newCommit;
         }
+
+        // Phase 3: List recent commits for orphan detection
+        async listRecentCommits(repo, perPage = 30) {
+            const [owner, repoName] = repo.split('/');
+            return await this.request(`/repos/${owner}/${repoName}/commits?per_page=${perPage}&_=${Date.now()}`);
+        }
+
+        // Phase 3: Get single commit details (includes files changed)
+        async getCommitDetail(repo, sha) {
+            const [owner, repoName] = repo.split('/');
+            return await this.request(`/repos/${owner}/${repoName}/commits/${sha}`);
+        }
     }
 
     // =========================================================================
@@ -5556,7 +5698,7 @@
         return { valid: errors.length === 0, errors };
     }
 
-    async function pollCompletionFiles(github, repoFullName, uid, existingJobs) {
+    async function pollCompletionFiles(github, repoFullName, uid, existingJobs, existingOrphans) {
         if (!github || !repoFullName || !uid) return [];
         const existingFileNames = new Set(existingJobs.filter(j => j.repoFullName === repoFullName).map(j => j.fileName));
         const newJobs = [];
@@ -5576,7 +5718,6 @@
 
                     const parsed = parseCompletionFrontmatter(content);
                     if (!parsed) {
-                        // Still create job with warning
                         const job = await CompletionFileService.create(uid, {
                             repoFullName, fileName: file.name,
                             validationStatus: 'warning',
@@ -5588,7 +5729,6 @@
                     }
 
                     const validation = validateCompletionFile(parsed);
-                    // Extract cc-spec-id if present in the file
                     const specIdMatch = content.match(/cc-spec-id:\s*(\S+)/);
 
                     const job = await CompletionFileService.create(uid, {
@@ -5606,18 +5746,140 @@
                     });
                     newJobs.push(job);
                     console.log('[CC] Detected completion file:', file.name, 'in', repoFullName);
+
+                    // Phase 3: Auto-match orphans — if this job's commits match existing orphans, mark them reconstructed
+                    if (existingOrphans && job.commits?.length > 0) {
+                        const jobCommitShas = job.commits.map(c => c.sha);
+                        const matchingOrphans = existingOrphans.filter(o =>
+                            o.repoFullName === repoFullName &&
+                            jobCommitShas.some(sha => o.commitSha?.startsWith(sha) || sha?.startsWith(o.commitSha)) &&
+                            o.state !== 'ignored'
+                        );
+                        for (const orphan of matchingOrphans) {
+                            await OrphanDetectionService.updateState(uid, orphan.id, 'reconstructed');
+                            console.log('[CC] Auto-matched orphan commit', orphan.commitSha?.slice(0, 7), 'to completion file', file.name);
+                        }
+                    }
                 } catch (e) {
                     console.warn('[CC] Error reading completion file:', file.name, e.message);
                 }
             }
         } catch (e) {
-            // cc/completions/ may not exist — that's fine
             if (!e.message?.includes('404') && !e.message?.includes('Not Found')) {
                 console.warn('[CC] Error polling completions in', repoFullName, ':', e.message);
             }
         }
 
         return newJobs;
+    }
+
+    // Phase 3: Poll for orphaned commits (commits with no matching completion file)
+    async function pollOrphanCommits(github, repoFullName, uid, existingJobs, existingOrphans, settings) {
+        if (!github || !repoFullName || !uid) return [];
+        const detectionDays = settings?.orphanDetectionDays || 14;
+        const cutoffDate = new Date(Date.now() - detectionDays * 24 * 60 * 60 * 1000);
+        const newOrphans = [];
+
+        try {
+            const commits = await github.listRecentCommits(repoFullName, 30);
+            if (!commits || !Array.isArray(commits)) return [];
+
+            // Build set of all commit SHAs from existing completion files
+            const knownShas = new Set();
+            for (const job of existingJobs) {
+                for (const c of (job.commits || [])) {
+                    if (c.sha) knownShas.add(c.sha);
+                    // Also add abbreviated versions for prefix matching
+                    if (c.sha?.length >= 7) knownShas.add(c.sha.slice(0, 7));
+                }
+            }
+
+            // Build set of already-tracked orphan SHAs
+            const existingOrphanShas = new Set(existingOrphans.map(o => o.commitSha).filter(Boolean));
+
+            for (const commit of commits) {
+                const sha = commit.sha;
+                if (!sha) continue;
+
+                // Skip if commit is too old
+                const commitDate = new Date(commit.commit?.author?.date || commit.commit?.committer?.date);
+                if (commitDate < cutoffDate) continue;
+
+                // Skip merge commits (more than 1 parent)
+                if (commit.parents?.length > 1) continue;
+
+                // Skip if already tracked as orphan
+                if (existingOrphanShas.has(sha)) continue;
+
+                // Skip if commit SHA matches any known completion file commit (full or abbreviated match)
+                if (knownShas.has(sha) || knownShas.has(sha.slice(0, 7))) continue;
+
+                // Skip if ALL changed files are under cc/ directory
+                // We need commit detail for file list — fetch it
+                try {
+                    const detail = await github.getCommitDetail(repoFullName, sha);
+                    const changedFiles = (detail?.files || []).map(f => ({ path: f.filename, status: f.status }));
+                    if (changedFiles.length > 0 && changedFiles.every(f => f.path.startsWith('cc/'))) continue;
+
+                    // This is an orphan commit
+                    const orphan = await OrphanDetectionService.create(uid, {
+                        repoFullName,
+                        commitSha: sha,
+                        commitMessage: commit.commit?.message || '',
+                        commitDate: commitDate.toISOString(),
+                        filesChanged: changedFiles,
+                        detectedAt: new Date().toISOString(),
+                        state: 'detected'
+                    });
+                    newOrphans.push(orphan);
+                    console.log('[CC] Detected orphan commit:', sha.slice(0, 7), commit.commit?.message?.split('\n')[0]);
+                } catch (e) {
+                    console.warn('[CC] Error fetching commit detail:', sha.slice(0, 7), e.message);
+                }
+            }
+        } catch (e) {
+            console.warn('[CC] Error polling orphan commits in', repoFullName, ':', e.message);
+        }
+
+        return newOrphans;
+    }
+
+    // Phase 3: Generate reconstruction markdown for orphaned commits
+    function generateOrphanReconstructionPackage(orphans) {
+        const lines = [
+            '# Reconstruction Task — Orphaned Commits',
+            '',
+            'The following commits were made without completion files. Please reconstruct',
+            'completion files for each commit (or group related commits into single completion files).',
+            '',
+            '## Instructions',
+            '- Use `git show {sha}` to inspect each commit',
+            '- Read the current CLAUDE.md for rules and decisions context',
+            '- Produce completion files to cc/completions/ following the standard format',
+            '- One completion file per logical task (group related commits if they\'re part of the same task)',
+            '- Required fields: task, status, files, commits',
+            '- Include what you can infer for contextual fields',
+            '- Note in the body that this is a reconstruction and narrative context may be incomplete',
+            '',
+            '## Orphaned Commits',
+            ''
+        ];
+
+        orphans.forEach((orphan, i) => {
+            lines.push(`### Commit ${i + 1}`);
+            lines.push(`- SHA: ${orphan.commitSha}`);
+            lines.push(`- Date: ${orphan.commitDate}`);
+            lines.push(`- Message: ${orphan.commitMessage?.split('\n')[0] || 'No message'}`);
+            if (orphan.filesChanged?.length > 0) {
+                lines.push('- Files changed:');
+                orphan.filesChanged.forEach(f => {
+                    lines.push(`  - ${f.path} (${f.status})`);
+                });
+            }
+            lines.push('');
+        });
+
+        return lines.join('\n');
     }
 
     // =========================================================================
@@ -5951,6 +6213,7 @@
         const [globalConcepts, setGlobalConcepts] = React.useState([]); // Ideation: ODRC concepts
         const [globalIdeas, setGlobalIdeas] = React.useState([]); // Ideation: Ideas
         const [globalCompletionJobs, setGlobalCompletionJobs] = React.useState([]); // Ingestion: Completion jobs
+        const [globalOrphanCommits, setGlobalOrphanCommits] = React.useState([]); // Phase 3: Orphan commits
         const [completionFileSettings, setCompletionFileSettings] = React.useState(CompletionFileSettings.getDefaults());
         const [firebaseUid, setFirebaseUid] = React.useState(null);
         const [firebaseUser, setFirebaseUser] = React.useState(null);
@@ -5973,6 +6236,7 @@
             let unsubscribeIdeas = () => {};
             let unsubscribeCompletionJobs = () => {};
             let unsubscribeCompletionSettings = () => {};
+            let unsubscribeOrphans = () => {};
 
             const unsubscribe = firebaseAuth.onAuthStateChanged((u) => {
                 setFirebaseUser(u);
@@ -6003,6 +6267,8 @@
                     // Listen for completion jobs and settings (Ingestion Pipeline)
                     unsubscribeCompletionJobs = CompletionFileService.listen(u.uid, setGlobalCompletionJobs);
                     unsubscribeCompletionSettings = CompletionFileSettings.listen(u.uid, setCompletionFileSettings);
+                    // Listen for orphan commits (Phase 3)
+                    unsubscribeOrphans = OrphanDetectionService.listen(u.uid, setGlobalOrphanCommits);
                 } else {
                     setFirebaseUid(null);
                     setGlobalIssues([]);
@@ -6017,6 +6283,7 @@
                     setGlobalConcepts([]);
                     setGlobalIdeas([]);
                     setGlobalCompletionJobs([]);
+                    setGlobalOrphanCommits([]);
                     setCompletionFileSettings(CompletionFileSettings.getDefaults());
                 }
             });
@@ -6037,10 +6304,11 @@
                 unsubscribeIdeas();
                 unsubscribeCompletionJobs();
                 unsubscribeCompletionSettings();
+                unsubscribeOrphans();
             };
         }, []);
 
-        // Completion file detection — poll on mount and view changes to dashboard/jobHistory
+        // Completion file + orphan commit detection — poll on mount and view changes to dashboard/jobHistory
         const completionPollRef = React.useRef(false);
         React.useEffect(() => {
             if (!firebaseUid || !github || completionPollRef.current) return;
@@ -6051,15 +6319,21 @@
                 const configuredApps = Object.values(apps).filter(a => a.testRepo || a.prodRepo || a.repos);
                 const checkedRepos = new Set();
                 let allNewJobs = [];
+                let allNewOrphans = [];
                 for (const app of configuredApps) {
                     const repoNames = [app.testRepo, app.prodRepo, app.repos?.test, app.repos?.prod].filter(Boolean);
                     for (const repo of repoNames) {
                         if (checkedRepos.has(repo)) continue;
                         checkedRepos.add(repo);
                         try {
-                            const newJobs = await pollCompletionFiles(github, repo, firebaseUid, globalCompletionJobs);
+                            const newJobs = await pollCompletionFiles(github, repo, firebaseUid, globalCompletionJobs, globalOrphanCommits);
                             allNewJobs = allNewJobs.concat(newJobs);
                         } catch (e) { console.warn('[CC] Poll error for', repo, e.message); }
+                        // Phase 3: Also poll for orphan commits
+                        try {
+                            const newOrphans = await pollOrphanCommits(github, repo, firebaseUid, globalCompletionJobs, globalOrphanCommits, completionFileSettings);
+                            allNewOrphans = allNewOrphans.concat(newOrphans);
+                        } catch (e) { console.warn('[CC] Orphan poll error for', repo, e.message); }
                     }
                 }
                 if (allNewJobs.length > 0) {
@@ -6067,6 +6341,16 @@
                     const confirmed = await showConfirm(
                         `Found ${allNewJobs.length} new completion file${allNewJobs.length !== 1 ? 's' : ''} in ${repoNames}.\n\nReview them now?`,
                         '📦 New Completed Work Detected'
+                    );
+                    if (confirmed) {
+                        setView('jobHistory');
+                    }
+                }
+                if (allNewOrphans.length > 0) {
+                    const repoNames = [...new Set(allNewOrphans.map(o => o.repoFullName?.split('/').pop()))].join(', ');
+                    const confirmed = await showConfirm(
+                        `Found ${allNewOrphans.length} commit${allNewOrphans.length !== 1 ? 's' : ''} in ${repoNames} with no completion file.\n\nView them?`,
+                        '📍 Orphaned Commits Detected'
                     );
                     if (confirmed) {
                         setView('jobHistory');
@@ -8504,7 +8788,8 @@
                         <JobHistoryView globalCompletionJobs={globalCompletionJobs} firebaseUid={firebaseUid}
                             github={github} apps={apps} showAlert={showAlert} showConfirm={showConfirm}
                             config={config} completionFileSettings={completionFileSettings}
-                            globalConcepts={globalConcepts} globalIdeas={globalIdeas} showPrompt={showPrompt} />
+                            globalConcepts={globalConcepts} globalIdeas={globalIdeas} showPrompt={showPrompt}
+                            globalOrphanCommits={globalOrphanCommits} />
                     )}
 
                     {view === 'config' && (
@@ -17179,18 +17464,24 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
     // JOB HISTORY VIEW (v8.58.0 — Ingestion Pipeline Phase 1)
     // =========================================================================
 
-    function JobHistoryView({ globalCompletionJobs, firebaseUid, github, apps, showAlert, showConfirm, config, completionFileSettings, globalConcepts, globalIdeas, showPrompt }) {
+    function JobHistoryView({ globalCompletionJobs, firebaseUid, github, apps, showAlert, showConfirm, config, completionFileSettings, globalConcepts, globalIdeas, showPrompt, globalOrphanCommits }) {
         const [stateFilter, setStateFilter] = React.useState('all');
         const [repoFilter, setRepoFilter] = React.useState('all');
         const [expandedJobId, setExpandedJobId] = React.useState(null);
         const [polling, setPolling] = React.useState(false);
 
         // Bundle assembly modal state
-        const [bundleModal, setBundleModal] = React.useState(null); // { jobId, steps: [], errors: [], excluded: [], result: null, active: bool }
+        const [bundleModal, setBundleModal] = React.useState(null);
         // Mark as Checked state
         const [checkingJobId, setCheckingJobId] = React.useState(null);
         const [checkOutcome, setCheckOutcome] = React.useState('confirmed');
         const [checkNotes, setCheckNotes] = React.useState('');
+        // Phase 3: ODRC Update Modal state
+        const [odrcModal, setOdrcModal] = React.useState(null); // { jobId, inputText, parsedUpdates, confirmedIndexes, results, phase: 'input'|'review'|'done' }
+        // Phase 3: Orphan section expanded
+        const [orphanExpanded, setOrphanExpanded] = React.useState(false);
+        // Phase 3: Batch classification modal
+        const [batchModal, setBatchModal] = React.useState(null); // { jobs, selectedIds, phase: 'select'|'assembling'|'done', steps, result, errors }
 
         const STATE_STYLES = {
             'new': 'bg-blue-900/50 text-blue-300',
@@ -17242,11 +17533,27 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
             unclassified: globalCompletionJobs.filter(j => !j.classified).length
         }), [globalCompletionJobs]);
 
+        // Orphan stats
+        const orphanStats = React.useMemo(() => ({
+            total: (globalOrphanCommits || []).length,
+            detected: (globalOrphanCommits || []).filter(o => o.state === 'detected').length,
+            dismissed: (globalOrphanCommits || []).filter(o => o.state === 'dismissed').length,
+            reconstructed: (globalOrphanCommits || []).filter(o => o.state === 'reconstructed').length
+        }), [globalOrphanCommits]);
+
+        const ORPHAN_STATE_STYLES = {
+            'detected': 'bg-red-900/50 text-red-300',
+            'dismissed': 'bg-slate-700 text-slate-400',
+            'reconstructed': 'bg-green-900/50 text-green-300',
+            'ignored': 'bg-slate-800 text-slate-500'
+        };
+
         // Manual poll trigger
         const handlePoll = async () => {
             if (!github || !firebaseUid) return;
             setPolling(true);
             let totalNew = 0;
+            let totalOrphans = 0;
             try {
                 const configuredApps = Object.values(apps).filter(a => a.testRepo || a.prodRepo || a.repos);
                 const checkedRepos = new Set();
@@ -17255,14 +17562,21 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                     for (const repo of repoNames) {
                         if (checkedRepos.has(repo)) continue;
                         checkedRepos.add(repo);
-                        const newJobs = await pollCompletionFiles(github, repo, firebaseUid, globalCompletionJobs);
+                        const newJobs = await pollCompletionFiles(github, repo, firebaseUid, globalCompletionJobs, globalOrphanCommits);
                         totalNew += newJobs.length;
+                        try {
+                            const newOrphans = await pollOrphanCommits(github, repo, firebaseUid, globalCompletionJobs, globalOrphanCommits || [], completionFileSettings);
+                            totalOrphans += newOrphans.length;
+                        } catch (e) { console.warn('[CC] Orphan poll error:', e.message); }
                     }
                 }
-                if (totalNew > 0) {
-                    await showAlert(`Found ${totalNew} new completion file${totalNew !== 1 ? 's' : ''}`, '📦 Files Detected');
+                const parts = [];
+                if (totalNew > 0) parts.push(`${totalNew} new completion file${totalNew !== 1 ? 's' : ''}`);
+                if (totalOrphans > 0) parts.push(`${totalOrphans} orphaned commit${totalOrphans !== 1 ? 's' : ''}`);
+                if (parts.length > 0) {
+                    await showAlert(`Found ${parts.join(' and ')}`, '📦 Scan Results');
                 } else {
-                    await showAlert('No new completion files found', '📦 Up to Date');
+                    await showAlert('No new completion files or orphaned commits found', '📦 Up to Date');
                 }
             } catch (e) {
                 await showAlert(`Poll error: ${e.message}`, '❌ Error');
@@ -17366,6 +17680,143 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
             }
         };
 
+        // Phase 3: ODRC Update Import
+        const openOdrcModal = (jobId) => {
+            setOdrcModal({ jobId, inputText: '', parsedUpdates: [], confirmedIndexes: new Set(), results: null, phase: 'input' });
+        };
+        const parseOdrcInput = () => {
+            if (!odrcModal) return;
+            const updates = ODRCUpdateIngestionService.parse(odrcModal.inputText);
+            const allIndexes = new Set(updates.map((_, i) => i));
+            setOdrcModal(prev => ({ ...prev, parsedUpdates: updates, confirmedIndexes: allIndexes, phase: updates.length > 0 ? 'review' : 'input' }));
+            if (updates.length === 0) {
+                showAlert('No ODRC updates could be parsed from the input. Check the format matches the expected pattern.', '⚠️ Parse Result');
+            }
+        };
+        const executeOdrcUpdates = async () => {
+            if (!odrcModal || !firebaseUid) return;
+            const selected = odrcModal.parsedUpdates.filter((_, i) => odrcModal.confirmedIndexes.has(i));
+            const results = await ODRCUpdateIngestionService.execute(firebaseUid, selected, globalIdeas || []);
+            // Mark job as classified if it has create/resolve actions
+            if (odrcModal.jobId) {
+                const job = globalCompletionJobs.find(j => j.id === odrcModal.jobId);
+                if (job && !job.classified) {
+                    try {
+                        await CompletionFileService._ref(firebaseUid).child(odrcModal.jobId).update({ classified: true });
+                    } catch (e) { console.warn('[CC] Could not mark job as classified:', e.message); }
+                }
+            }
+            setOdrcModal(prev => ({ ...prev, results, phase: 'done' }));
+        };
+
+        // Phase 3: Orphan actions
+        const dismissOrphan = async (orphanId) => {
+            await OrphanDetectionService.updateState(firebaseUid, orphanId, 'dismissed');
+        };
+        const ignoreOrphan = async (orphanId) => {
+            await OrphanDetectionService.updateState(firebaseUid, orphanId, 'ignored');
+        };
+        const handleReconstructOrphans = (orphans) => {
+            const detectedOrphans = orphans.filter(o => o.state === 'detected' || o.state === 'dismissed');
+            if (detectedOrphans.length === 0) {
+                showAlert('No orphaned commits to reconstruct.', '📍 Orphans');
+                return;
+            }
+            const markdown = generateOrphanReconstructionPackage(detectedOrphans);
+            navigator.clipboard.writeText(markdown).then(() => {
+                showAlert(`Reconstruction task for ${detectedOrphans.length} orphan commit${detectedOrphans.length !== 1 ? 's' : ''} copied to clipboard. Paste into a Claude Code session to reconstruct completion files.`, '📋 Copied');
+            }).catch(() => {
+                // Fallback: download as file
+                const blob = new Blob([markdown], { type: 'text/markdown' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `reconstruct-orphans-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showAlert('Reconstruction task downloaded as file.', '📥 Downloaded');
+            });
+        };
+
+        // Phase 3: Batch Classification
+        const openBatchClassification = () => {
+            const unclassifiedJobs = globalCompletionJobs.filter(j => !j.classified);
+            const selectedIds = new Set(unclassifiedJobs.map(j => j.id));
+            setBatchModal({ jobs: unclassifiedJobs, selectedIds, phase: 'select', steps: [], result: null, errors: [] });
+        };
+        const executeBatchClassification = async () => {
+            if (!batchModal || !github) return;
+            if (!ClaudeAPIService.isConfigured()) {
+                await showAlert('Claude API key not configured. Go to Settings to add your Anthropic API key.', '🔑 API Key Required');
+                return;
+            }
+            const selectedJobs = batchModal.jobs.filter(j => batchModal.selectedIds.has(j.id));
+            if (selectedJobs.length === 0) return;
+
+            const steps = [
+                { key: 'fetching', label: 'Fetching completion files', status: 'active' },
+                { key: 'odrc', label: 'Generating ODRC summary', status: 'pending' },
+                { key: 'prompt', label: 'Generating classification prompt', status: 'pending' },
+                { key: 'zip', label: 'Building zip', status: 'pending' },
+                { key: 'done', label: 'Complete', status: 'pending' }
+            ];
+            setBatchModal(prev => ({ ...prev, phase: 'assembling', steps }));
+
+            try {
+                const zip = new JSZip();
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const bundleName = `classification-bundle-${timestamp}`;
+                const errors = [];
+
+                // Step 1: Add completion files
+                for (const job of selectedJobs) {
+                    try {
+                        const fileData = await github.getFileContent(job.repoFullName, `cc/completions/${job.fileName}`);
+                        if (fileData?.textContent) {
+                            zip.file(`completion-files/${job.fileName}`, fileData.textContent);
+                        }
+                    } catch (e) { errors.push(`Could not fetch ${job.fileName}: ${e.message}`); }
+                }
+                setBatchModal(prev => ({ ...prev, steps: prev.steps.map(s => s.key === 'fetching' ? { ...s, status: 'done' } : s.key === 'odrc' ? { ...s, status: 'active' } : s) }));
+
+                // Step 2: ODRC summary
+                const odrcSummary = ODRCSummaryGenerator.generateFull(globalConcepts || [], globalIdeas || []);
+                zip.file('odrc-summary.md', odrcSummary);
+                setBatchModal(prev => ({ ...prev, steps: prev.steps.map(s => s.key === 'odrc' ? { ...s, status: 'done' } : s.key === 'prompt' ? { ...s, status: 'active' } : s) }));
+
+                // Step 3: Classification prompt
+                try {
+                    const prompt = await ReviewPromptGenerator.generateBatchClassificationPrompt(selectedJobs, odrcSummary);
+                    zip.file('classification-prompt.md', prompt);
+                } catch (e) {
+                    errors.push(`Classification prompt generation failed: ${e.message}`);
+                    zip.file('classification-prompt.md', '# Classification Prompt\n\n*Static fallback — Claude API call failed.*\n\nPlease classify each completion file in this bundle against the ODRC landscape in odrc-summary.md.');
+                }
+                setBatchModal(prev => ({ ...prev, steps: prev.steps.map(s => s.key === 'prompt' ? { ...s, status: 'done' } : s.key === 'zip' ? { ...s, status: 'active' } : s) }));
+
+                // Step 4: Manifest + zip
+                const manifest = { bundleName, createdAt: new Date().toISOString(), mode: 'batch-classification', jobCount: selectedJobs.length, jobs: selectedJobs.map(j => ({ id: j.id, task: j.task, fileName: j.fileName })), errors };
+                zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+                const blob = await zip.generateAsync({ type: 'blob' });
+                setBatchModal(prev => ({
+                    ...prev,
+                    phase: 'done',
+                    steps: prev.steps.map(s => ({ ...s, status: 'done' })),
+                    result: { blob, bundleName, manifest },
+                    errors
+                }));
+            } catch (e) {
+                setBatchModal(prev => ({ ...prev, errors: [...prev.errors, e.message], phase: 'done' }));
+            }
+        };
+        const handleDownloadBatchBundle = () => {
+            if (batchModal?.result) {
+                ValidationBundleAssembler.download(batchModal.result.blob, batchModal.result.bundleName);
+            }
+        };
+
         // Auth guard
         if (!firebaseUid) {
             return (
@@ -17402,8 +17853,20 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 {stats.unclassified >= (completionFileSettings?.unclassifiedNudgeThreshold || 5) && (
                     <div className="bg-amber-900/20 border border-amber-700/50 rounded-lg p-3 mb-4 flex items-center justify-between">
                         <span className="text-sm text-amber-300">You have {stats.unclassified} unclassified jobs. Package them for classification?</span>
-                        <button disabled className="px-3 py-1.5 rounded text-xs bg-slate-700 text-slate-500 cursor-not-allowed" title="Coming in Phase 3 — Batch classification">
-                            📦 Batch Package (Phase 3)
+                        <button onClick={openBatchClassification}
+                            className="px-3 py-1.5 rounded text-xs bg-amber-700 hover:bg-amber-600 font-medium">
+                            📦 Classify Batch
+                        </button>
+                    </div>
+                )}
+
+                {/* Orphan nudge */}
+                {orphanStats.detected >= (completionFileSettings?.orphanNudgeThreshold || 5) && (
+                    <div className="bg-red-900/20 border border-red-700/50 rounded-lg p-3 mb-4 flex items-center justify-between">
+                        <span className="text-sm text-red-300">You have {orphanStats.detected} orphaned commits with no completion files. Review them?</span>
+                        <button onClick={() => setOrphanExpanded(true)}
+                            className="px-3 py-1.5 rounded text-xs bg-red-700 hover:bg-red-600 font-medium">
+                            📍 View Orphans
                         </button>
                     </div>
                 )}
@@ -17490,6 +17953,12 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                                     <button onClick={(e) => { e.stopPropagation(); setCheckingJobId(job.id); setCheckOutcome('confirmed'); setCheckNotes(''); }}
                                                         className="px-3 py-1 rounded text-xs bg-green-700 hover:bg-green-600">
                                                         ✅ Mark as Checked
+                                                    </button>
+                                                )}
+                                                {(job.state === 'reviewed' || job.state === 'checked') && (
+                                                    <button onClick={(e) => { e.stopPropagation(); openOdrcModal(job.id); }}
+                                                        className="px-3 py-1 rounded text-xs bg-purple-700 hover:bg-purple-600">
+                                                        📥 Import ODRC Updates
                                                     </button>
                                                 )}
                                             </div>
@@ -17630,6 +18099,57 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                     </div>
                 )}
 
+                {/* Phase 3: Orphan Commits Section */}
+                {(globalOrphanCommits || []).length > 0 && (
+                    <div className="mt-6">
+                        <button onClick={() => setOrphanExpanded(!orphanExpanded)}
+                            className="flex items-center gap-2 text-sm font-bold text-slate-300 hover:text-slate-100 mb-2">
+                            <span className={`transform transition-transform text-xs ${orphanExpanded ? 'rotate-90' : ''}`}>▶</span>
+                            📍 Orphaned Commits ({orphanStats.detected > 0 ? `${orphanStats.detected} active` : orphanStats.total})
+                        </button>
+                        {orphanExpanded && (
+                            <div className="space-y-2">
+                                {orphanStats.detected > 0 && (
+                                    <div className="flex gap-2 mb-2">
+                                        <button onClick={() => handleReconstructOrphans(globalOrphanCommits)}
+                                            className="px-3 py-1 rounded text-xs bg-indigo-700 hover:bg-indigo-600">
+                                            🔄 Reconstruct All ({orphanStats.detected})
+                                        </button>
+                                    </div>
+                                )}
+                                {(globalOrphanCommits || []).filter(o => o.state !== 'ignored').map(orphan => (
+                                    <div key={orphan.id} className="bg-slate-800/50 border border-slate-700 rounded-lg p-3">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className={`px-2 py-0.5 rounded text-xs ${ORPHAN_STATE_STYLES[orphan.state] || ''}`}>{orphan.state}</span>
+                                            <span className="text-indigo-400 font-mono text-xs">{orphan.commitSha?.slice(0, 7)}</span>
+                                            <span className="text-xs text-slate-400">{orphan.repoFullName?.split('/').pop()}</span>
+                                            <span className="text-xs text-slate-500">{new Date(orphan.commitDate).toLocaleDateString()}</span>
+                                        </div>
+                                        <p className="text-sm text-slate-200 mb-1">{orphan.commitMessage?.split('\n')[0] || 'No message'}</p>
+                                        {orphan.filesChanged?.length > 0 && (
+                                            <div className="text-xs text-slate-400 mb-2">{orphan.filesChanged.length} files changed</div>
+                                        )}
+                                        <div className="flex gap-2">
+                                            {(orphan.state === 'detected' || orphan.state === 'dismissed') && (
+                                                <>
+                                                    <button onClick={() => handleReconstructOrphans([orphan])}
+                                                        className="px-2 py-0.5 rounded text-xs bg-indigo-700 hover:bg-indigo-600">🔄 Reconstruct</button>
+                                                    {orphan.state === 'detected' && (
+                                                        <button onClick={() => dismissOrphan(orphan.id)}
+                                                            className="px-2 py-0.5 rounded text-xs bg-slate-700 hover:bg-slate-600">Dismiss</button>
+                                                    )}
+                                                    <button onClick={() => ignoreOrphan(orphan.id)}
+                                                        className="px-2 py-0.5 rounded text-xs bg-slate-800 hover:bg-slate-700 text-slate-500">Ignore</button>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {/* Bundle Assembly Modal */}
                 {bundleModal && (
                     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={() => !bundleModal.active && setBundleModal(null)}>
@@ -17638,8 +18158,6 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                 📦 Bundle Assembly
                                 {bundleModal.active && <span className="text-xs text-slate-400 animate-pulse">Processing...</span>}
                             </h3>
-
-                            {/* Step list */}
                             <div className="space-y-2 mb-4">
                                 {bundleModal.steps.map(step => (
                                     <div key={step.key} className="flex items-center gap-2 text-sm">
@@ -17656,28 +18174,18 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                     </div>
                                 ))}
                             </div>
-
-                            {/* Errors */}
                             {bundleModal.errors.length > 0 && (
                                 <div className="bg-amber-900/20 border border-amber-700/50 rounded p-2 mb-3">
                                     <h4 className="text-xs font-bold text-amber-400 mb-1">Warnings</h4>
-                                    <ul className="ml-4 text-xs text-amber-300 list-disc">
-                                        {bundleModal.errors.map((err, i) => <li key={i}>{err}</li>)}
-                                    </ul>
+                                    <ul className="ml-4 text-xs text-amber-300 list-disc">{bundleModal.errors.map((err, i) => <li key={i}>{err}</li>)}</ul>
                                 </div>
                             )}
-
-                            {/* Excluded files */}
                             {bundleModal.excluded.length > 0 && (
                                 <div className="bg-slate-700/50 border border-slate-600 rounded p-2 mb-3">
                                     <h4 className="text-xs font-bold text-slate-400 mb-1">Excluded Files (size limit)</h4>
-                                    <ul className="ml-4 text-xs text-slate-400 list-disc">
-                                        {bundleModal.excluded.map((ex, i) => <li key={i}>{ex.path} — {ex.reason}</li>)}
-                                    </ul>
+                                    <ul className="ml-4 text-xs text-slate-400 list-disc">{bundleModal.excluded.map((ex, i) => <li key={i}>{ex.path} — {ex.reason}</li>)}</ul>
                                 </div>
                             )}
-
-                            {/* Result actions */}
                             {bundleModal.result && (
                                 <div className="bg-green-900/20 border border-green-700/50 rounded p-3 mb-3">
                                     <p className="text-sm text-green-300 mb-2">
@@ -17690,14 +18198,204 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                     </button>
                                 </div>
                             )}
-
-                            {/* Close / Cancel */}
                             <div className="flex justify-end">
                                 <button onClick={() => setBundleModal(null)}
                                     className="px-3 py-1.5 rounded text-sm bg-slate-700 hover:bg-slate-600">
                                     {bundleModal.active ? 'Cancel' : 'Close'}
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Phase 3: ODRC Update Modal */}
+                {odrcModal && (
+                    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={() => setOdrcModal(null)}>
+                        <div className="bg-slate-800 border border-slate-600 rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                            <h3 className="text-lg font-bold mb-4">📥 Import ODRC Updates</h3>
+
+                            {odrcModal.phase === 'input' && (
+                                <div className="space-y-3">
+                                    <p className="text-sm text-slate-400">Paste the structured ODRC Updates output from Chat below:</p>
+                                    <textarea
+                                        value={odrcModal.inputText}
+                                        onChange={e => setOdrcModal(prev => ({ ...prev, inputText: e.target.value }))}
+                                        placeholder={'## ODRC Updates\n- RESOLVE OPEN: "description" → matched to concept_id xyz\n- NEW OPEN: "description" → tag to Idea Name\n- NEW DECISION: "description"'}
+                                        className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm font-mono h-40 resize-y" />
+                                    <div className="flex gap-2 justify-end">
+                                        <button onClick={() => setOdrcModal(null)}
+                                            className="px-3 py-1.5 rounded text-sm bg-slate-700 hover:bg-slate-600">Cancel</button>
+                                        <button onClick={parseOdrcInput} disabled={!odrcModal.inputText.trim()}
+                                            className="px-3 py-1.5 rounded text-sm bg-indigo-600 hover:bg-indigo-500 font-medium disabled:opacity-50">Parse Updates</button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {odrcModal.phase === 'review' && (
+                                <div className="space-y-3">
+                                    <p className="text-sm text-slate-400">Found {odrcModal.parsedUpdates.length} updates. Select which to apply:</p>
+                                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                                        {odrcModal.parsedUpdates.map((update, i) => (
+                                            <div key={i} className="flex items-start gap-2 bg-slate-700/50 rounded p-2">
+                                                <input type="checkbox" checked={odrcModal.confirmedIndexes.has(i)}
+                                                    onChange={e => {
+                                                        setOdrcModal(prev => {
+                                                            const newSet = new Set(prev.confirmedIndexes);
+                                                            e.target.checked ? newSet.add(i) : newSet.delete(i);
+                                                            return { ...prev, confirmedIndexes: newSet };
+                                                        });
+                                                    }}
+                                                    className="mt-1" />
+                                                <div className="flex-1">
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className="text-xs">{update.action === 'resolve' ? '✅' : '➕'}</span>
+                                                        <span className={`px-1.5 py-0.5 rounded text-xs ${
+                                                            update.type === 'OPEN' ? 'bg-purple-900/50 text-purple-300' :
+                                                            update.type === 'DECISION' ? 'bg-blue-900/50 text-blue-300' :
+                                                            update.type === 'RULE' ? 'bg-green-900/50 text-green-300' :
+                                                            'bg-amber-900/50 text-amber-300'
+                                                        }`}>{update.type}</span>
+                                                        <span className="text-xs text-slate-400">{update.action === 'resolve' ? 'Resolve' : 'Create'}</span>
+                                                    </div>
+                                                    <p className="text-sm text-slate-200">{update.description}</p>
+                                                    {update.action === 'resolve' && update.conceptId && (
+                                                        <p className="text-xs text-slate-400 mt-1">Target: concept {update.conceptId}</p>
+                                                    )}
+                                                    {update.action === 'create' && (
+                                                        <div className="flex items-center gap-2 mt-1">
+                                                            <span className="text-xs text-slate-500">Tag to:</span>
+                                                            <select className="bg-slate-800 border border-slate-600 rounded px-1 py-0.5 text-xs"
+                                                                value={update.overrideIdeaId || update.targetIdea || ''}
+                                                                onChange={e => {
+                                                                    setOdrcModal(prev => {
+                                                                        const newUpdates = [...prev.parsedUpdates];
+                                                                        newUpdates[i] = { ...newUpdates[i], overrideIdeaId: e.target.value || null };
+                                                                        return { ...prev, parsedUpdates: newUpdates };
+                                                                    });
+                                                                }}>
+                                                                <option value="">Untagged</option>
+                                                                {(globalIdeas || []).filter(idea => idea.status === 'active').map(idea => (
+                                                                    <option key={idea.id} value={idea.id}>{idea.name}</option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex gap-2 justify-end">
+                                        <button onClick={() => setOdrcModal(prev => ({ ...prev, phase: 'input' }))}
+                                            className="px-3 py-1.5 rounded text-sm bg-slate-700 hover:bg-slate-600">Back</button>
+                                        <button onClick={executeOdrcUpdates} disabled={odrcModal.confirmedIndexes.size === 0}
+                                            className="px-3 py-1.5 rounded text-sm bg-green-600 hover:bg-green-500 font-medium disabled:opacity-50">
+                                            Apply {odrcModal.confirmedIndexes.size} Updates
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {odrcModal.phase === 'done' && odrcModal.results && (
+                                <div className="space-y-3">
+                                    <p className="text-sm text-slate-400">Results:</p>
+                                    <div className="space-y-1">
+                                        {odrcModal.results.map((r, i) => (
+                                            <div key={i} className="flex items-center gap-2 text-sm">
+                                                <span>{r.status === 'success' ? '✅' : '❌'}</span>
+                                                <span className="text-slate-200">{r.action === 'resolve' ? 'Resolved' : 'Created'} {r.type}: {r.description}</span>
+                                                {r.error && <span className="text-red-400 text-xs">({r.error})</span>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex justify-end">
+                                        <button onClick={() => setOdrcModal(null)}
+                                            className="px-3 py-1.5 rounded text-sm bg-slate-700 hover:bg-slate-600">Close</button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* Phase 3: Batch Classification Modal */}
+                {batchModal && (
+                    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={() => batchModal.phase !== 'assembling' && setBatchModal(null)}>
+                        <div className="bg-slate-800 border border-slate-600 rounded-lg p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                            <h3 className="text-lg font-bold mb-4">📦 Batch Classification</h3>
+
+                            {batchModal.phase === 'select' && (
+                                <div className="space-y-3">
+                                    <p className="text-sm text-slate-400">Select unclassified jobs to package ({batchModal.selectedIds.size} selected):</p>
+                                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                                        {batchModal.jobs.map(job => (
+                                            <div key={job.id} className="flex items-center gap-2 bg-slate-700/50 rounded p-2">
+                                                <input type="checkbox" checked={batchModal.selectedIds.has(job.id)}
+                                                    onChange={e => {
+                                                        setBatchModal(prev => {
+                                                            const newSet = new Set(prev.selectedIds);
+                                                            e.target.checked ? newSet.add(job.id) : newSet.delete(job.id);
+                                                            return { ...prev, selectedIds: newSet };
+                                                        });
+                                                    }} />
+                                                <div className="flex-1">
+                                                    <p className="text-sm text-slate-200">{job.task || job.fileName}</p>
+                                                    <p className="text-xs text-slate-400">{job.repoFullName?.split('/').pop()} · {job.files?.length || 0} files</p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex gap-2 justify-end">
+                                        <button onClick={() => setBatchModal(null)}
+                                            className="px-3 py-1.5 rounded text-sm bg-slate-700 hover:bg-slate-600">Cancel</button>
+                                        <button onClick={executeBatchClassification} disabled={batchModal.selectedIds.size === 0}
+                                            className="px-3 py-1.5 rounded text-sm bg-amber-600 hover:bg-amber-500 font-medium disabled:opacity-50">
+                                            Package {batchModal.selectedIds.size} Jobs
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {batchModal.phase === 'assembling' && (
+                                <div className="space-y-2 mb-4">
+                                    {batchModal.steps.map(step => (
+                                        <div key={step.key} className="flex items-center gap-2 text-sm">
+                                            <span className="w-5 text-center">
+                                                {step.status === 'pending' && <span className="text-slate-500">○</span>}
+                                                {step.status === 'active' && <span className="text-blue-400 animate-spin inline-block">⟳</span>}
+                                                {step.status === 'done' && <span className="text-green-400">✓</span>}
+                                            </span>
+                                            <span className={step.status === 'pending' ? 'text-slate-500' : 'text-slate-200'}>{step.label}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {batchModal.phase === 'done' && (
+                                <div className="space-y-3">
+                                    {batchModal.errors.length > 0 && (
+                                        <div className="bg-amber-900/20 border border-amber-700/50 rounded p-2">
+                                            <h4 className="text-xs font-bold text-amber-400 mb-1">Warnings</h4>
+                                            <ul className="ml-4 text-xs text-amber-300 list-disc">{batchModal.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+                                        </div>
+                                    )}
+                                    {batchModal.result && (
+                                        <div className="bg-green-900/20 border border-green-700/50 rounded p-3">
+                                            <p className="text-sm text-green-300 mb-2">
+                                                Bundle ready: {(batchModal.result.blob.size / 1024).toFixed(1)} KB
+                                                ({batchModal.result.manifest.jobCount} jobs)
+                                            </p>
+                                            <button onClick={handleDownloadBatchBundle}
+                                                className="px-4 py-1.5 rounded text-sm bg-green-700 hover:bg-green-600 font-medium">
+                                                ⬇️ Download Bundle
+                                            </button>
+                                        </div>
+                                    )}
+                                    <div className="flex justify-end">
+                                        <button onClick={() => setBatchModal(null)}
+                                            className="px-3 py-1.5 rounded text-sm bg-slate-700 hover:bg-slate-600">Close</button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}
