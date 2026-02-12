@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.55.2">
+    <meta name="version" content="8.56.1">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -4326,8 +4326,9 @@
             return decodeURIComponent(escape(atob(clean)));
         }
         
-        async request(endpoint, options = {}) {
+        async request(endpoint, options = {}, retries = 0) {
             const url = `${this.baseUrl}${endpoint}`;
+            const maxRetries = options._maxRetries ?? 3;
             try {
                 const response = await fetch(url, {
                     ...options,
@@ -4357,6 +4358,14 @@
                     throw new Error(`GitHub API rate limit exceeded. Resets at ${resetDate.toLocaleTimeString()}. Please wait and try again.`);
                 }
                 
+                // Retry on 400/502/503 (transient GitHub errors)
+                if ((response.status === 400 || response.status === 502 || response.status === 503) && retries < maxRetries) {
+                    const delay = Math.min(1000 * Math.pow(2, retries), 8000); // 1s, 2s, 4s, 8s
+                    console.warn(`⚠️ GitHub API ${response.status} on ${endpoint} — retry ${retries + 1}/${maxRetries} in ${delay}ms`);
+                    await new Promise(r => setTimeout(r, delay));
+                    return this.request(endpoint, options, retries + 1);
+                }
+                
                 if (!response.ok) {
                     const error = await response.json().catch(() => ({}));
                     console.error('GitHub API Error:', {
@@ -4369,6 +4378,13 @@
                 }
                 return response.json();
             } catch (e) {
+                // Retry on network errors (TypeError: Load failed, CORS issues)
+                if (e instanceof TypeError && retries < maxRetries) {
+                    const delay = Math.min(1000 * Math.pow(2, retries), 8000);
+                    console.warn(`⚠️ Network error on ${endpoint} — retry ${retries + 1}/${maxRetries} in ${delay}ms: ${e.message}`);
+                    await new Promise(r => setTimeout(r, delay));
+                    return this.request(endpoint, options, retries + 1);
+                }
                 console.error('Request failed:', url, e);
                 throw e;
             }
@@ -4706,9 +4722,11 @@
             const treeSha = commit.tree.sha;
             console.log('Current tree SHA:', treeSha);
             
-            // Create blobs for each file
-            const treeItems = await Promise.all(files.map(async (file) => {
-                console.log('Creating blob for:', file.path);
+            // Create blobs sequentially (parallel uploads cause CORS/throttling failures on GitHub)
+            const treeItems = [];
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                console.log(`Creating blob for: ${file.path} (${i + 1}/${files.length})`);
                 const blob = await this.request(`/repos/${owner}/${repoName}/git/blobs`, {
                     method: 'POST',
                     body: JSON.stringify({
@@ -4717,13 +4735,17 @@
                     })
                 });
                 console.log('Blob created:', file.path, '-> SHA:', blob.sha);
-                return {
+                treeItems.push({
                     path: file.path,
                     mode: '100644',
                     type: 'blob',
                     sha: blob.sha
-                };
-            }));
+                });
+                // Small delay between blob uploads to avoid GitHub throttling
+                if (i < files.length - 1) {
+                    await new Promise(r => setTimeout(r, 250));
+                }
+            }
             
             console.log('Tree items:', treeItems);
             
@@ -9236,7 +9258,21 @@
                                                     version: f.appVersion || f.version
                                                 }));
                                                 
-                                                const primaryAppId = batch.files.find(f => f.suggestedApp !== '_shared')?.suggestedApp || batch.files[0]?.suggestedApp;
+                                                let primaryAppId = batch.files.find(f => f.suggestedApp && f.suggestedApp !== '_shared' && apps[f.suggestedApp])?.suggestedApp;
+                                                
+                                                // If no app files in this batch (e.g. only docs/shared), find an app that uses this repo
+                                                if (!primaryAppId) {
+                                                    primaryAppId = Object.keys(apps).find(id => {
+                                                        const a = apps[id];
+                                                        return (batch.target === 'test' ? a.testRepo : a.prodRepo) === batch.repo
+                                                            || (a.repos?.test === batch.repo || a.repos?.prod === batch.repo);
+                                                    });
+                                                }
+                                                
+                                                if (!primaryAppId) {
+                                                    console.warn(`[SmartDeploy] No valid app for batch ${rk}, skipping (${batch.files.length} files)`);
+                                                    continue;
+                                                }
                                                 
                                                 if (batchFiles.length > 1) {
                                                     await onBatchDeploy(batchFiles, primaryAppId, batch.target);
@@ -9254,6 +9290,13 @@
                                                         updateApp(batchAppId, { [versionKey]: appVersion, updatedAt: Date.now() });
                                                         console.log(`[SmartDeploy] Updated ${batchAppId} ${versionKey}: ${appVersion}`);
                                                     }
+                                                }
+                                                
+                                                // Inter-batch delay: let GitHub settle before next batch commit
+                                                const batchKeys = Object.keys(repoBatches);
+                                                if (batchKeys.indexOf(rk) < batchKeys.length - 1) {
+                                                    console.log('[SmartDeploy] Waiting 1.5s before next batch...');
+                                                    await new Promise(r => setTimeout(r, 1500));
                                                 }
                                             }
                                             console.log('=== DEPLOY ALL COMPLETE ===');
@@ -13651,6 +13694,147 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
         hasData(app, scopeData, workItems) {
             const appItems = (workItems || []).filter(wi => wi.appId === app.id);
             return !!(scopeData || appItems.length > 0 || app.lifecycle?.problemStatement || app.lifecycle?.category);
+        }
+    };
+    
+    // =========================================================================
+    // WORKSTREAM BRIEF GENERATOR (Streams Evolution — Session 2)
+    // =========================================================================
+    
+    const WorkstreamBriefGenerator = {
+        
+        /**
+         * Generate a focused workstream brief — a ~30-line context block
+         * designed to be pasted into a Claude session for continuity.
+         * 
+         * @param {Object} stream - Stream object from WorkStreamService
+         * @param {Object} apps - Apps map {id: appDef} from config
+         * @param {Object} versions - Map of appId → {test, prod} version strings
+         * @returns {string} Markdown brief
+         */
+        generate(stream, apps, versions) {
+            if (!stream) return '# Error\n\nNo stream data provided.';
+            
+            const now = new Date();
+            let md = '';
+            
+            // === Header: Identity ===
+            md += `# Stream: ${stream.name}\n`;
+            md += `Status: ${stream.status || 'active'}`;
+            if (stream.project) md += ` | Project: ${stream.project}`;
+            
+            // App names with versions
+            const appIds = stream.appIds?.length > 0 ? stream.appIds : (stream.appId ? [stream.appId] : []);
+            if (appIds.length > 0) {
+                const appLabels = appIds.map(id => {
+                    const appDef = apps?.[id];
+                    const name = appDef?.name || id;
+                    const ver = versions?.[id];
+                    const verStr = ver?.prod || ver?.test;
+                    return verStr ? `${name} v${verStr}` : name;
+                });
+                md += ` | Apps: ${appLabels.join(', ')}`;
+            }
+            md += '\n';
+            
+            if (stream.owner) md += `Owner: ${stream.owner}`;
+            if (stream.goal) md += ` | Goal: ${stream.goal}`;
+            if (stream.owner || stream.goal) md += '\n';
+            if (stream.targetRelease) md += `Target: ${stream.targetRelease}\n`;
+            md += '\n';
+            
+            // === Active Concepts ===
+            const activeConcepts = (stream.concepts || []).filter(c => c.status === 'active');
+            if (activeConcepts.length > 0) {
+                md += `## Active Concepts\n`;
+                activeConcepts.forEach(c => {
+                    md += `- ${c.type.toUpperCase()}: ${c.text}`;
+                    if (c.scope?.length > 0) md += ` [${c.scope.join(', ')}]`;
+                    md += '\n';
+                });
+                md += '\n';
+            }
+            
+            // === Open Items ===
+            if (stream.openItems?.length > 0) {
+                md += `## Open Items\n`;
+                stream.openItems.forEach(item => {
+                    md += `- ${item}\n`;
+                });
+                md += '\n';
+            }
+            
+            // === Test Status ===
+            if (stream.tests?.coverage) {
+                const cov = stream.tests.coverage;
+                const parts = [];
+                if (cov.pass > 0) parts.push(`${cov.pass} pass`);
+                if (cov.fail > 0) parts.push(`${cov.fail} FAIL`);
+                if (cov.untested > 0) parts.push(`${cov.untested} untested`);
+                md += `## Test Status: ${parts.join(', ')} (${cov.total || 0} total)\n`;
+                
+                // List failing scenarios if any
+                if (stream.tests.scenarios?.length > 0) {
+                    const failing = stream.tests.scenarios.filter(s => s.status === 'fail');
+                    if (failing.length > 0) {
+                        failing.forEach(s => {
+                            md += `- ❌ ${s.name}\n`;
+                        });
+                    }
+                }
+                md += '\n';
+            }
+            
+            // === Code Review ===
+            if (stream.codeReview) {
+                md += `## Code Review: ${stream.codeReview.status || 'pending'}\n`;
+                if (stream.codeReview.lastReview) md += `Last: ${stream.codeReview.lastReview}\n`;
+                if (stream.codeReview.techniques) md += `Techniques: ${stream.codeReview.techniques}\n`;
+                if (stream.codeReview.issuesFound != null) {
+                    md += `Issues: ${stream.codeReview.issuesFound} found, ${stream.codeReview.issuesFixed || 0} fixed\n`;
+                }
+                md += '\n';
+            }
+            
+            // === Last Session ===
+            if (stream.sessions?.length > 0) {
+                const last = stream.sessions[stream.sessions.length - 1];
+                md += `## Last Session (${last.date || 'unknown'})\n`;
+                if (last.summary) md += `${last.summary}\n`;
+                if (last.conceptsAdded > 0) md += `Concepts added: ${last.conceptsAdded}\n`;
+                if (last.testsRun > 0) md += `Tests run: ${last.testsRun}\n`;
+                md += '\n';
+            }
+            
+            // === Next ===
+            if (stream.next) {
+                md += `## Next\n`;
+                md += `${stream.next}\n\n`;
+            }
+            
+            // === Footer ===
+            md += `---\n`;
+            md += `*Generated ${now.toLocaleDateString()} by Command Center v${document.querySelector('meta[name="version"]')?.content || '?'}*\n`;
+            
+            console.log(`[StreamBrief] Generated brief for "${stream.name}" (${activeConcepts.length} concepts, ${stream.openItems?.length || 0} open items)`);
+            return md;
+        },
+        
+        /**
+         * Check if a stream has enough data for a useful brief.
+         */
+        hasData(stream) {
+            if (!stream) return false;
+            return !!(
+                stream.name &&
+                (stream.concepts?.length > 0 ||
+                 stream.openItems?.length > 0 ||
+                 stream.sessions?.length > 0 ||
+                 stream.tests?.coverage ||
+                 stream.codeReview ||
+                 stream.next ||
+                 stream.goal)
+            );
         }
     };
     

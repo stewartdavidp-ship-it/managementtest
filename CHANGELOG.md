@@ -1,5 +1,33 @@
 # Command Center — Changelog
 
+## [8.56.1] — 2026-02-11 — Deploy All Reliability Fix
+
+### Fixed (CC Core)
+- **Sequential blob creation** — replaced `Promise.all` with sequential uploads + 250ms inter-blob delay to prevent GitHub API throttling
+- **Retry with exponential backoff** — `request()` retries up to 3x on TypeError (CORS/network), HTTP 400/502/503 with 1s→2s→4s→8s delays
+- **Inter-batch delay** — 1.5s pause between repo batches in Deploy All to let GitHub settle
+
+### Changed (Infrastructure v1.0.2, Quality v1.0.2)
+- Version bump for deployment consistency
+
+## [8.56.0] — 2026-02-11 — Streams Evolution: Workstream Brief Generator + Stream Detail UI
+
+### Added (CC Core)
+- **`WorkstreamBriefGenerator`** — generates ~30-line markdown brief from stream data (identity, concepts, open items, test status, code review, last session, next)
+- **`WorkstreamBriefGenerator.hasData()`** — checks if a stream has enough data for a useful brief
+- Console instrumentation: `[StreamBrief]` prefixed logs
+
+### Added (Analytics Satellite v1.2.0)
+- **WorkstreamBriefModal** — preview panel with rendered markdown and "Copy Brief" clipboard button
+- **StreamDetailPanel** — expandable tabbed detail view within stream cards (click stream name to toggle)
+- **Concepts tab** — list with color-coded type badges, active/superseded toggle, manual add, import from cc-concepts block, deduplication, remove
+- **Tests tab** — coverage summary, scenario list with click-to-cycle status (untested→pass→fail), add/remove scenarios, auto-recalculate coverage
+- **Review tab** — code review status badge, record/edit form (status, date, techniques, issues found/fixed)
+- **Artifacts tab** — read-only list with type, name, date, repo
+- **Sessions tab** — reverse-chronological history with date, summary, concepts added, tests run
+- **"📄 Brief" button** on each stream card action row
+- **`saveStreamField()`** helper for inline detail panel updates (no modal close)
+
 ## [8.55.2] — 2026-02-11 — Streams Evolution: Data Model + Concept Parser
 
 ### Added (Analytics Satellite v1.0.1)

@@ -1,3 +1,87 @@
+Command Center v8.56.1 — Deploy All Reliability Fix
+=========================================================================
+Released: 2026-02-11
+
+Fixes the CORS/throttling failures during Deploy All that caused CC core
+batch deploys to fail when multiple batches ran back-to-back.
+
+ROOT CAUSE
+- batchCommit used Promise.all to create blobs in parallel
+- 6+ simultaneous POST requests (including 1.2MB CC index.html) overwhelmed
+  GitHub's blob API, returning CORS 400 / "Origin null" / "Load failed"
+- Second batch started immediately after first batch completed, compounding
+
+FIX: THREE-LAYER DEPLOY RESILIENCE
+1. request() retry with exponential backoff (up to 3 retries)
+   - Catches TypeError (CORS/network), HTTP 400/502/503
+   - Delays: 1s → 2s → 4s → 8s
+   - Logs each retry: "⚠️ Network error on ... — retry N/3 in Nms"
+2. Sequential blob creation in batchCommit (was Promise.all)
+   - Blobs created one at a time with 250ms delay between uploads
+   - Prevents parallel POST flooding
+   - Progress logging: "Creating blob for: X (N/M)"
+3. Inter-batch delay in Deploy All (1.5s between repo batches)
+   - Lets GitHub settle between batch commits
+   - Logs: "[SmartDeploy] Waiting 1.5s before next batch..."
+
+IMPACT
+- Deploy All now handles the shared-then-CC-core pattern reliably
+- Single-app deploys also benefit from retry logic
+- No behavior change for successful deploys (delays only on failure/throttle)
+
+=========================================================================
+
+Command Center v8.56.0 — Streams Evolution: Workstream Brief Generator + Stream Detail UI
+=========================================================================
+Released: 2026-02-11
+
+Sessions 2-3 of the CC Streams Evolution project.
+
+SESSION 2: WORKSTREAM BRIEF GENERATOR (CC Core)
+- New WorkstreamBriefGenerator object with generate() and hasData() methods
+- Generates ~30-line markdown brief from stream data
+- Includes: identity/status, active concepts, open items, test status,
+  code review, last session, next steps
+- App names resolved with current versions from config
+- Console instrumentation: [StreamBrief] prefixed logs
+
+SESSION 2: ANALYTICS SATELLITE (v1.1.0)
+- "📄 Brief" button added to each stream card action row
+- WorkstreamBriefModal: preview panel with rendered markdown
+- "Copy Brief" button with clipboard integration
+
+SESSION 3: STREAM DETAIL UI (Analytics v1.2.0)
+- Click stream name to expand/collapse inline detail panel
+- 5 tabbed sections: Concepts, Tests, Review, Artifacts, Sessions
+- CONCEPTS TAB:
+  - List concepts with color-coded type badges (RULE=red, DECISION=blue, etc.)
+  - Toggle active/superseded status per concept
+  - Add concept manually (type dropdown, text, scope)
+  - Import from cc-concepts block (paste and parse)
+  - Deduplication on import
+  - Remove individual concepts
+- TESTS TAB:
+  - Coverage summary: pass/fail/untested counts
+  - Scenario list with click-to-cycle status (untested → pass → fail)
+  - Add/remove test scenarios
+  - Auto-recalculates coverage on every change
+- REVIEW TAB:
+  - Code review status badge (pending/in-progress/issues/clean)
+  - Record/edit: status, date, techniques, issues found/fixed
+- ARTIFACTS TAB:
+  - List artifacts with type, name, date, repo
+  - Read-only (auto-populated from doc pushes)
+- SESSIONS TAB:
+  - Reverse-chronological session history
+  - Date, summary, concepts added, tests run
+
+FILES MODIFIED
+- command-center/index.html: +WorkstreamBriefGenerator (~120 lines)
+- analytics/index.html: +StreamDetailPanel (~310 lines), +WorkstreamBriefModal (~110 lines),
+  +WorkstreamBriefGenerator (~110 lines), brief button, expanded state, saveStreamField helper
+
+=========================================================================
+
 Command Center v8.55.2 — Streams Evolution: Data Model + Concept Parser
 =========================================================================
 Released: 2026-02-11
