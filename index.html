@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.56.3">
+    <meta name="version" content="8.56.4">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -8179,7 +8179,13 @@
                                     // Remove successfully pushed docs from staged files
                                     if (pushedDocIds.length > 0) {
                                         setStagedFiles(prev => prev.filter(f => !pushedDocIds.includes(f.id)));
-                                        
+                                        const skipped = pushedDocIds.length - actuallyPushedDocs.length;
+                                        const summary = actuallyPushedDocs.map(d => d.name).join(', ');
+                                        const msg = skipped > 0
+                                            ? `Pushed ${actuallyPushedDocs.length} doc${actuallyPushedDocs.length !== 1 ? 's' : ''} (${skipped} unchanged): ${summary}`
+                                            : `Pushed ${actuallyPushedDocs.length} doc${actuallyPushedDocs.length !== 1 ? 's' : ''}: ${summary}`;
+                                        await showAlert(msg, '📄 Docs Pushed');
+
                                         // Check actually-changed docs for concepts (skip unchanged)
                                         if (actuallyPushedDocs.length > 0) {
                                             checkPushedDocsForConcepts(actuallyPushedDocs, globalStreams, showConfirm, showPrompt, {
@@ -8187,6 +8193,8 @@
                                                 updateStream: WorkStreamService.update.bind(WorkStreamService)
                                             }).catch(e => console.error('[Concepts] Error during concept check:', e));
                                         }
+                                    } else if (docFiles.length > 0) {
+                                        await showAlert('No docs were pushed — check console for errors.', '⚠️ Doc Push Failed');
                                     }
                                 }
                             }}
@@ -10252,7 +10260,13 @@
                                                         }
                                                         if (pushedDocIds.length > 0) {
                                                             setStagedFiles(prev => prev.filter(f => !pushedDocIds.includes(f.id)));
-                                                            
+                                                            const skipped = pushedDocIds.length - actuallyPushedDocs.length;
+                                                            const summary = actuallyPushedDocs.map(d => d.name).join(', ');
+                                                            const msg = skipped > 0
+                                                                ? `Pushed ${actuallyPushedDocs.length} doc${actuallyPushedDocs.length !== 1 ? 's' : ''} (${skipped} unchanged): ${summary}`
+                                                                : `Pushed ${actuallyPushedDocs.length} doc${actuallyPushedDocs.length !== 1 ? 's' : ''}: ${summary}`;
+                                                            await showAlert(msg, '📄 Docs Pushed');
+
                                                             // Check actually-changed docs for concepts (skip unchanged)
                                                             if (actuallyPushedDocs.length > 0) {
                                                                 checkPushedDocsForConcepts(actuallyPushedDocs, globalStreams, showConfirm, showPrompt, {
@@ -10260,6 +10274,8 @@
                                                                     updateStream: WorkStreamService.update.bind(WorkStreamService)
                                                                 }).catch(e => console.error('[Concepts] Error during concept check:', e));
                                                             }
+                                                        } else if (totalDocs > 0) {
+                                                            await showAlert('No docs were pushed — check console for errors.', '⚠️ Doc Push Failed');
                                                         }
                                                     }
                                                 }
