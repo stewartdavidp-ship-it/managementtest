@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.58.0">
+    <meta name="version" content="8.59.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2377,11 +2377,223 @@
             };
         }
     };
-    
+
+    // =========================================================================
+    // CLAUDE API SERVICE (v8.59.0 — Ingestion Pipeline Phase 2)
+    // =========================================================================
+
+    const ClaudeAPIService = {
+        getApiKey() {
+            try { return localStorage.getItem('cc_api_key') || ''; } catch { return ''; }
+        },
+        isConfigured() { return !!this.getApiKey(); },
+        async call({ model = 'claude-haiku-4-5-20251001', system, userMessage, maxTokens = 4096 }) {
+            const apiKey = this.getApiKey();
+            if (!apiKey) throw new Error('Claude API key not configured. Set it in Settings.');
+            const response = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': apiKey,
+                    'anthropic-version': '2023-06-01',
+                    'anthropic-dangerous-direct-browser-access': 'true'
+                },
+                body: JSON.stringify({
+                    model, max_tokens: maxTokens, system,
+                    messages: [{ role: 'user', content: userMessage }]
+                })
+            });
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error?.message || `Claude API error: ${response.status}`);
+            }
+            const data = await response.json();
+            return data.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+        }
+    };
+
+    // =========================================================================
+    // ODRC SUMMARY GENERATOR (v8.59.0)
+    // =========================================================================
+
+    const ODRCSummaryGenerator = {
+        _renderGroup(type, concepts, ideas) {
+            const items = concepts.filter(c => c.type === type && c.status === 'active');
+            if (items.length === 0) return '';
+            const lines = [`## ${type}s`];
+            items.forEach(c => {
+                const ideaName = ideas.find(i => i.id === c.ideaOrigin)?.name || 'unknown';
+                lines.push(`- ${c.content} *(from: ${ideaName})*`);
+            });
+            return lines.join('\n');
+        },
+
+        generateScoped(concepts, ideas, specId) {
+            // Filter concepts with matching specId in scopeTags
+            let scoped = concepts.filter(c => c.status === 'active' && (c.scopeTags || []).includes(specId));
+            if (scoped.length === 0) scoped = concepts.filter(c => c.status === 'active'); // fallback to full
+            const scope = scoped.length === concepts.filter(c => c.status === 'active').length ? 'full active landscape' : `scoped to spec ${specId}`;
+            const sections = ODRC_TYPES.map(t => this._renderGroup(t, scoped, ideas)).filter(Boolean);
+            return `# ODRC State Summary\nScope: ${scope}\n\n${sections.join('\n\n')}`;
+        },
+
+        generateFull(concepts, ideas) {
+            const active = concepts.filter(c => c.status === 'active');
+            const sections = ODRC_TYPES.map(t => this._renderGroup(t, active, ideas)).filter(Boolean);
+            return `# ODRC State Summary\nScope: full active landscape\n\n${sections.join('\n\n')}`;
+        }
+    };
+
+    // =========================================================================
+    // REVIEW PROMPT GENERATOR (v8.59.0)
+    // =========================================================================
+
+    const ReviewPromptGenerator = {
+        async generateReviewPrompt(completionJob, odrcSummary) {
+            const system = `You are a code reviewer for a software project. You will generate a review prompt that another AI assistant will use to validate completed work. The review prompt should instruct the reviewer to check: correctness of implementation, alignment with rules and decisions, side effects or regressions, whether claimed ODRC resolutions are accurate, and completeness of the task. Be specific to the actual work described. Output only the review prompt in markdown.`;
+            const userMessage = `Generate a review prompt for this completed work:\n\n## Task\n${completionJob.task}\n\n## Status\n${completionJob.status}\n\n## Files Changed\n${(completionJob.files || []).map(f => `- ${f.path} (${f.action})`).join('\n')}\n\n## ODRC References\n${completionJob.odrc ? JSON.stringify(completionJob.odrc, null, 2) : 'None'}\n\n## Unexpected Findings\n${(completionJob.unexpectedFindings || []).map(f => `- ${f}`).join('\n') || 'None'}\n\n## Unresolved Items\n${(completionJob.unresolved || []).map(u => `- ${u.item}: ${u.reason}`).join('\n') || 'None'}\n\n## Active ODRC State\n${odrcSummary}`;
+            return await ClaudeAPIService.call({ system, userMessage });
+        },
+
+        async generateClassificationPrompt(completionJob, odrcSummary) {
+            const system = `You are helping classify unplanned development work into a project's ODRC (Opens, Decisions, Rules, Constraints) framework. You will generate a classification prompt that another AI assistant will use to: (1) determine if this work resolves any existing OPENs, (2) identify if it aligns with existing DECISIONs or RULEs, (3) suggest new OPENs if gaps were discovered, and (4) categorize the work type (UX fix, performance, integration, bug fix, tech debt, feature, refactor). Output only the classification prompt in markdown.\n\nIMPORTANT: At the end of the prompt, instruct the reviewer to output structured ODRC recommendations in this exact format:\n\n## ODRC Updates\n- RESOLVE OPEN: "description" → matched to concept_id {id}\n- NEW OPEN: "description" → tag to Idea {name}\n- NEW OPEN: "description" → untagged\n- NEW DECISION: "description"`;
+            const userMessage = `Generate a classification prompt for this unplanned work:\n\n## Task\n${completionJob.task}\n\n## Status\n${completionJob.status}\n\n## Files Changed\n${(completionJob.files || []).map(f => `- ${f.path} (${f.action})`).join('\n')}\n\n## Full ODRC Landscape\n${odrcSummary}`;
+            return await ClaudeAPIService.call({ system, userMessage });
+        }
+    };
+
+    // =========================================================================
+    // VALIDATION BUNDLE ASSEMBLER (v8.59.0)
+    // =========================================================================
+
+    const ValidationBundleAssembler = {
+        async assemble({ completionJob, github, repoFullName, globalConcepts, globalIdeas, bundleSizeLimit = 5242880, onProgress }) {
+            const zip = new JSZip();
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const bundleName = `validation-bundle-${timestamp}`;
+            const errors = [];
+            const excluded = [];
+
+            // Step 1: Fetch completion file
+            onProgress('fetching-completion', 'Reading completion file from repo...');
+            try {
+                const completionContent = await github.getFileContent(repoFullName, `cc/completions/${completionJob.fileName}`);
+                if (completionContent?.textContent) {
+                    zip.file('completion-file.md', completionContent.textContent);
+                } else {
+                    errors.push('Could not fetch completion file — using cached data');
+                    zip.file('completion-file.md', this._reconstructFromCache(completionJob));
+                }
+            } catch (e) {
+                errors.push('Could not fetch completion file — using cached data');
+                zip.file('completion-file.md', this._reconstructFromCache(completionJob));
+            }
+
+            // Step 2: Fetch spec
+            onProgress('fetching-spec', 'Reading spec archive...');
+            try {
+                if (completionJob.specId) {
+                    const specContent = await github.getFileContent(repoFullName, `cc/specs/${completionJob.specId}.md`);
+                    if (specContent?.textContent) {
+                        zip.file('spec.md', specContent.textContent);
+                    } else {
+                        const currentSpec = await github.getFileContent(repoFullName, 'CLAUDE.md');
+                        if (currentSpec?.textContent) {
+                            zip.file('spec.md', currentSpec.textContent);
+                            errors.push('Archived spec not found — included current CLAUDE.md instead');
+                        }
+                    }
+                } else {
+                    const currentSpec = await github.getFileContent(repoFullName, 'CLAUDE.md');
+                    if (currentSpec?.textContent) zip.file('spec.md', currentSpec.textContent);
+                }
+            } catch (e) { errors.push(`Spec fetch error: ${e.message}`); }
+
+            // Step 3: Fetch changed code files
+            onProgress('fetching-files', `Fetching ${completionJob.files?.length || 0} changed files...`);
+            let totalFileSize = 0;
+            for (const file of (completionJob.files || [])) {
+                try {
+                    const fileContent = await github.getFileContent(repoFullName, file.path);
+                    if (fileContent?.textContent) {
+                        const fileSize = new Blob([fileContent.textContent]).size;
+                        if (totalFileSize + fileSize > bundleSizeLimit) {
+                            excluded.push({ path: file.path, size: fileSize, reason: 'Bundle size limit exceeded' });
+                            continue;
+                        }
+                        zip.file(`files/${file.path}`, fileContent.textContent);
+                        totalFileSize += fileSize;
+                    }
+                } catch (e) { errors.push(`Could not fetch ${file.path}: ${e.message}`); }
+            }
+
+            // Step 4: Generate ODRC summary
+            onProgress('generating-summary', 'Building ODRC state summary...');
+            const isPlanned = !!completionJob.specId;
+            const odrcSummary = isPlanned
+                ? ODRCSummaryGenerator.generateScoped(globalConcepts, globalIdeas, completionJob.specId)
+                : ODRCSummaryGenerator.generateFull(globalConcepts, globalIdeas);
+            zip.file('odrc-summary.md', odrcSummary);
+
+            // Step 5: Generate review prompt via Claude API
+            onProgress('generating-prompt', 'Generating review prompt via Claude API...');
+            try {
+                const prompt = isPlanned
+                    ? await ReviewPromptGenerator.generateReviewPrompt(completionJob, odrcSummary)
+                    : await ReviewPromptGenerator.generateClassificationPrompt(completionJob, odrcSummary);
+                zip.file('review-prompt.md', prompt);
+            } catch (e) {
+                errors.push(`Review prompt generation failed: ${e.message}`);
+                zip.file('review-prompt.md', this._staticPromptFallback(completionJob, isPlanned));
+            }
+
+            // Step 6: Manifest
+            const manifest = {
+                bundleName, createdAt: new Date().toISOString(),
+                completionFile: completionJob.fileName, repo: repoFullName,
+                specId: completionJob.specId || null, mode: isPlanned ? 'review' : 'classification',
+                filesIncluded: (completionJob.files || []).filter(f => !excluded.find(e => e.path === f.path)).map(f => f.path),
+                filesExcluded: excluded.map(e => ({ path: e.path, reason: e.reason })),
+                errors
+            };
+            zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+
+            // Step 7: Generate zip
+            onProgress('building-zip', 'Compressing bundle...');
+            const blob = await zip.generateAsync({ type: 'blob' });
+            onProgress('done', `Bundle ready: ${(blob.size / 1024).toFixed(1)} KB`);
+            return { blob, bundleName, manifest };
+        },
+
+        download(blob, bundleName) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `${bundleName}.zip`;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a); URL.revokeObjectURL(url);
+        },
+
+        _reconstructFromCache(job) {
+            return ['---', `task: "${job.task}"`, `status: ${job.status}`, 'files:',
+                ...(job.files || []).map(f => `  - path: "${f.path}"\n    action: ${f.action}`),
+                'commits:', ...(job.commits || []).map(c => `  - sha: "${c.sha}"\n    message: "${c.message}"`),
+                '---', '', '*Reconstruction from cached data. Original file could not be fetched.*'
+            ].join('\n');
+        },
+
+        _staticPromptFallback(job, isPlanned) {
+            const header = isPlanned ? '# Review Prompt' : '# Classification Prompt';
+            const instructions = isPlanned
+                ? '1. **Correctness** — Does the implementation match the task?\n2. **Rule compliance** — Were all RULEs followed?\n3. **Side effects** — Could changes break anything?\n4. **ODRC alignment** — Are claimed resolutions accurate?\n5. **Completeness** — Is the task fully done?'
+                : '1. **Match to existing OPENs** — Does this resolve any?\n2. **Categorize** — What type of work? (UX fix, performance, bug fix, feature, refactor)\n3. **New OPENs** — Any new questions or gaps?';
+            return `${header}\n\n*Static fallback — Claude API call failed during assembly.*\n\n## Instructions\n\n${instructions}\n\n## ODRC Update Format\n\n\`\`\`\n## ODRC Updates\n- RESOLVE OPEN: "description" → matched to concept_id {id}\n- NEW OPEN: "description" → tag to Idea {name}\n- NEW DECISION: "description"\n\`\`\``;
+        }
+    };
+
     // =========================================================================
     // SESSION TYPES + SESSION BRIEF GENERATOR (v8.25.0 — Phase 2.1)
     // =========================================================================
-    
+
     // (Domain services extracted to Infrastructure satellite: PorkbunService, GoDaddyService, DomainProviderRegistry)
     
 
@@ -8291,7 +8503,8 @@
                     {view === 'jobHistory' && (
                         <JobHistoryView globalCompletionJobs={globalCompletionJobs} firebaseUid={firebaseUid}
                             github={github} apps={apps} showAlert={showAlert} showConfirm={showConfirm}
-                            config={config} completionFileSettings={completionFileSettings} />
+                            config={config} completionFileSettings={completionFileSettings}
+                            globalConcepts={globalConcepts} globalIdeas={globalIdeas} showPrompt={showPrompt} />
                     )}
 
                     {view === 'config' && (
@@ -16966,11 +17179,18 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
     // JOB HISTORY VIEW (v8.58.0 — Ingestion Pipeline Phase 1)
     // =========================================================================
 
-    function JobHistoryView({ globalCompletionJobs, firebaseUid, github, apps, showAlert, showConfirm, config, completionFileSettings }) {
+    function JobHistoryView({ globalCompletionJobs, firebaseUid, github, apps, showAlert, showConfirm, config, completionFileSettings, globalConcepts, globalIdeas, showPrompt }) {
         const [stateFilter, setStateFilter] = React.useState('all');
         const [repoFilter, setRepoFilter] = React.useState('all');
         const [expandedJobId, setExpandedJobId] = React.useState(null);
         const [polling, setPolling] = React.useState(false);
+
+        // Bundle assembly modal state
+        const [bundleModal, setBundleModal] = React.useState(null); // { jobId, steps: [], errors: [], excluded: [], result: null, active: bool }
+        // Mark as Checked state
+        const [checkingJobId, setCheckingJobId] = React.useState(null);
+        const [checkOutcome, setCheckOutcome] = React.useState('confirmed');
+        const [checkNotes, setCheckNotes] = React.useState('');
 
         const STATE_STYLES = {
             'new': 'bg-blue-900/50 text-blue-300',
@@ -16983,6 +17203,20 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
             'partial': 'bg-amber-900/50 text-amber-300',
             'blocked': 'bg-red-900/50 text-red-300'
         };
+        const OUTCOME_STYLES = {
+            'confirmed': 'bg-green-900/50 text-green-300',
+            'challenged': 'bg-amber-900/50 text-amber-300',
+            'escalated': 'bg-red-900/50 text-red-300'
+        };
+        const BUNDLE_STEPS = [
+            { key: 'fetching-completion', label: 'Fetching completion file' },
+            { key: 'fetching-spec', label: 'Fetching spec archive' },
+            { key: 'fetching-files', label: 'Fetching changed files' },
+            { key: 'generating-summary', label: 'Generating ODRC summary' },
+            { key: 'generating-prompt', label: 'Generating review prompt' },
+            { key: 'building-zip', label: 'Building zip' },
+            { key: 'done', label: 'Complete' }
+        ];
 
         // Unique repos from jobs
         const repos = React.useMemo(() => {
@@ -17045,6 +17279,93 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
             setExpandedJobId(jobId);
         };
 
+        // Package for Check — opens bundle assembly modal
+        const handlePackageForCheck = async (job) => {
+            if (!ClaudeAPIService.isConfigured()) {
+                await showAlert('Claude API key not configured. Go to Settings to add your Anthropic API key.', '🔑 API Key Required');
+                return;
+            }
+            if (!github) {
+                await showAlert('GitHub not connected. Configure GitHub in Settings.', '⚠️ GitHub Required');
+                return;
+            }
+
+            // Initialize modal with steps
+            const initialSteps = BUNDLE_STEPS.map(s => ({ ...s, status: 'pending', detail: '' }));
+            setBundleModal({ jobId: job.id, steps: initialSteps, errors: [], excluded: [], result: null, active: true });
+
+            try {
+                const bundleSizeLimit = completionFileSettings?.bundleSizeLimit || (5 * 1024 * 1024);
+                const result = await ValidationBundleAssembler.assemble({
+                    completionJob: job,
+                    github,
+                    repoFullName: job.repoFullName,
+                    globalConcepts: globalConcepts || [],
+                    globalIdeas: globalIdeas || [],
+                    bundleSizeLimit,
+                    onProgress: (step, detail) => {
+                        setBundleModal(prev => {
+                            if (!prev) return prev;
+                            const newSteps = prev.steps.map(s => {
+                                if (s.key === step) return { ...s, status: step === 'done' ? 'done' : 'active', detail };
+                                if (s.status === 'active' && s.key !== step) return { ...s, status: 'done' };
+                                return s;
+                            });
+                            return { ...prev, steps: newSteps };
+                        });
+                    }
+                });
+
+                // Update modal with result
+                setBundleModal(prev => {
+                    if (!prev) return prev;
+                    const finalSteps = prev.steps.map(s => ({ ...s, status: 'done' }));
+                    return {
+                        ...prev,
+                        steps: finalSteps,
+                        errors: result.manifest.errors || [],
+                        excluded: result.manifest.filesExcluded || [],
+                        result,
+                        active: false
+                    };
+                });
+
+                // Move to reviewed state if currently new/acknowledged
+                if (job.state === 'new' || job.state === 'acknowledged') {
+                    await CompletionFileService.updateState(firebaseUid, job.id, 'reviewed');
+                }
+            } catch (e) {
+                setBundleModal(prev => {
+                    if (!prev) return prev;
+                    const errorSteps = prev.steps.map(s =>
+                        s.status === 'active' ? { ...s, status: 'error', detail: e.message } : s
+                    );
+                    return { ...prev, steps: errorSteps, errors: [...prev.errors, e.message], active: false };
+                });
+            }
+        };
+
+        // Download the assembled bundle
+        const handleDownloadBundle = () => {
+            if (bundleModal?.result) {
+                ValidationBundleAssembler.download(bundleModal.result.blob, bundleModal.result.bundleName);
+            }
+        };
+
+        // Mark as Checked flow
+        const handleMarkAsChecked = async () => {
+            if (!checkingJobId || !firebaseUid) return;
+            try {
+                await CompletionFileService.updateCheckOutcome(firebaseUid, checkingJobId, checkOutcome, checkNotes);
+                await CompletionFileService.updateState(firebaseUid, checkingJobId, 'checked');
+                setCheckingJobId(null);
+                setCheckOutcome('confirmed');
+                setCheckNotes('');
+            } catch (e) {
+                await showAlert(`Error marking as checked: ${e.message}`, '❌ Error');
+            }
+        };
+
         // Auth guard
         if (!firebaseUid) {
             return (
@@ -17081,8 +17402,8 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 {stats.unclassified >= (completionFileSettings?.unclassifiedNudgeThreshold || 5) && (
                     <div className="bg-amber-900/20 border border-amber-700/50 rounded-lg p-3 mb-4 flex items-center justify-between">
                         <span className="text-sm text-amber-300">You have {stats.unclassified} unclassified jobs. Package them for classification?</span>
-                        <button disabled className="px-3 py-1.5 rounded text-xs bg-slate-700 text-slate-500 cursor-not-allowed" title="Coming in Phase 2">
-                            📦 Package (Phase 2)
+                        <button disabled className="px-3 py-1.5 rounded text-xs bg-slate-700 text-slate-500 cursor-not-allowed" title="Coming in Phase 3 — Batch classification">
+                            📦 Batch Package (Phase 3)
                         </button>
                     </div>
                 )}
@@ -17146,7 +17467,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                     {isExpanded && (
                                         <div className="border-t border-slate-700 p-4 space-y-3">
                                             {/* Action buttons */}
-                                            <div className="flex gap-2 mb-3">
+                                            <div className="flex gap-2 mb-3 flex-wrap">
                                                 {(job.state === 'new') && (
                                                     <>
                                                         <button onClick={(e) => { e.stopPropagation(); reviewJob(job.id); }}
@@ -17159,12 +17480,44 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                                     <button onClick={(e) => { e.stopPropagation(); reviewJob(job.id); }}
                                                         className="px-3 py-1 rounded text-xs bg-amber-700 hover:bg-amber-600">📖 Review</button>
                                                 )}
-                                                {(job.state === 'acknowledged' || job.state === 'reviewed') && (
-                                                    <button disabled className="px-3 py-1 rounded text-xs bg-slate-700 text-slate-500 cursor-not-allowed" title="Coming in Phase 2">
-                                                        📦 Package for Check (Phase 2)
+                                                {(job.state === 'new' || job.state === 'acknowledged' || job.state === 'reviewed') && (
+                                                    <button onClick={(e) => { e.stopPropagation(); handlePackageForCheck(job); }}
+                                                        className="px-3 py-1 rounded text-xs bg-indigo-700 hover:bg-indigo-600">
+                                                        📦 Package for Check
+                                                    </button>
+                                                )}
+                                                {(job.state === 'reviewed') && (
+                                                    <button onClick={(e) => { e.stopPropagation(); setCheckingJobId(job.id); setCheckOutcome('confirmed'); setCheckNotes(''); }}
+                                                        className="px-3 py-1 rounded text-xs bg-green-700 hover:bg-green-600">
+                                                        ✅ Mark as Checked
                                                     </button>
                                                 )}
                                             </div>
+
+                                            {/* Mark as Checked inline form */}
+                                            {checkingJobId === job.id && (
+                                                <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3 space-y-2">
+                                                    <h4 className="text-xs font-bold text-slate-300">Mark as Checked</h4>
+                                                    <div className="flex items-center gap-2">
+                                                        <label className="text-xs text-slate-400">Outcome:</label>
+                                                        <select value={checkOutcome} onChange={e => setCheckOutcome(e.target.value)}
+                                                            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
+                                                            <option value="confirmed">✅ Confirmed</option>
+                                                            <option value="challenged">⚠️ Challenged</option>
+                                                            <option value="escalated">🔴 Escalated</option>
+                                                        </select>
+                                                    </div>
+                                                    <textarea value={checkNotes} onChange={e => setCheckNotes(e.target.value)}
+                                                        placeholder="Optional notes — what did the review find?"
+                                                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs h-16 resize-none" />
+                                                    <div className="flex gap-2">
+                                                        <button onClick={handleMarkAsChecked}
+                                                            className="px-3 py-1 rounded text-xs bg-green-700 hover:bg-green-600">Confirm</button>
+                                                        <button onClick={() => setCheckingJobId(null)}
+                                                            className="px-3 py-1 rounded text-xs bg-slate-700 hover:bg-slate-600">Cancel</button>
+                                                    </div>
+                                                </div>
+                                            )}
 
                                             {/* Task description */}
                                             <div>
@@ -17263,8 +17616,10 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                             {/* Check outcome (for checked jobs) */}
                                             {job.state === 'checked' && job.checkOutcome && (
                                                 <div className="bg-slate-700/50 rounded p-2">
-                                                    <h4 className="text-xs font-bold text-slate-400 mb-1">Check Outcome: <span className="text-green-300">{job.checkOutcome}</span></h4>
-                                                    {job.checkNotes && <p className="text-xs text-slate-300">{job.checkNotes}</p>}
+                                                    <h4 className="text-xs font-bold text-slate-400 mb-1">Check Outcome:
+                                                        <span className={`ml-2 px-2 py-0.5 rounded ${OUTCOME_STYLES[job.checkOutcome] || ''}`}>{job.checkOutcome}</span>
+                                                    </h4>
+                                                    {job.checkNotes && <p className="text-xs text-slate-300 mt-1">{job.checkNotes}</p>}
                                                 </div>
                                             )}
                                         </div>
@@ -17272,6 +17627,78 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                 </div>
                             );
                         })}
+                    </div>
+                )}
+
+                {/* Bundle Assembly Modal */}
+                {bundleModal && (
+                    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={() => !bundleModal.active && setBundleModal(null)}>
+                        <div className="bg-slate-800 border border-slate-600 rounded-lg p-6 max-w-lg w-full mx-4" onClick={e => e.stopPropagation()}>
+                            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                                📦 Bundle Assembly
+                                {bundleModal.active && <span className="text-xs text-slate-400 animate-pulse">Processing...</span>}
+                            </h3>
+
+                            {/* Step list */}
+                            <div className="space-y-2 mb-4">
+                                {bundleModal.steps.map(step => (
+                                    <div key={step.key} className="flex items-center gap-2 text-sm">
+                                        <span className="w-5 text-center">
+                                            {step.status === 'pending' && <span className="text-slate-500">○</span>}
+                                            {step.status === 'active' && <span className="text-blue-400 animate-spin inline-block">⟳</span>}
+                                            {step.status === 'done' && <span className="text-green-400">✓</span>}
+                                            {step.status === 'error' && <span className="text-red-400">✗</span>}
+                                        </span>
+                                        <span className={step.status === 'pending' ? 'text-slate-500' : step.status === 'error' ? 'text-red-300' : 'text-slate-200'}>
+                                            {step.label}
+                                        </span>
+                                        {step.detail && <span className="text-xs text-slate-500 ml-auto truncate max-w-48">{step.detail}</span>}
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* Errors */}
+                            {bundleModal.errors.length > 0 && (
+                                <div className="bg-amber-900/20 border border-amber-700/50 rounded p-2 mb-3">
+                                    <h4 className="text-xs font-bold text-amber-400 mb-1">Warnings</h4>
+                                    <ul className="ml-4 text-xs text-amber-300 list-disc">
+                                        {bundleModal.errors.map((err, i) => <li key={i}>{err}</li>)}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {/* Excluded files */}
+                            {bundleModal.excluded.length > 0 && (
+                                <div className="bg-slate-700/50 border border-slate-600 rounded p-2 mb-3">
+                                    <h4 className="text-xs font-bold text-slate-400 mb-1">Excluded Files (size limit)</h4>
+                                    <ul className="ml-4 text-xs text-slate-400 list-disc">
+                                        {bundleModal.excluded.map((ex, i) => <li key={i}>{ex.path} — {ex.reason}</li>)}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {/* Result actions */}
+                            {bundleModal.result && (
+                                <div className="bg-green-900/20 border border-green-700/50 rounded p-3 mb-3">
+                                    <p className="text-sm text-green-300 mb-2">
+                                        Bundle ready: {(bundleModal.result.blob.size / 1024).toFixed(1)} KB
+                                        ({bundleModal.result.manifest.filesIncluded.length} files included)
+                                    </p>
+                                    <button onClick={handleDownloadBundle}
+                                        className="px-4 py-1.5 rounded text-sm bg-green-700 hover:bg-green-600 font-medium">
+                                        ⬇️ Download Bundle
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Close / Cancel */}
+                            <div className="flex justify-end">
+                                <button onClick={() => setBundleModal(null)}
+                                    className="px-3 py-1.5 rounded text-sm bg-slate-700 hover:bg-slate-600">
+                                    {bundleModal.active ? 'Cancel' : 'Close'}
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 )}
             </div>
