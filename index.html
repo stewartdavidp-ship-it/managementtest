@@ -2732,6 +2732,115 @@
     };
 
     // =========================================================================
+    // ODRC CONTENT DETECTION (v8.61.0 — Idea-to-Chat Pipeline Phase 3)
+    // =========================================================================
+
+    // Detect ODRC content in file text (content-based detection)
+    function detectODRCContent(fileContent) {
+        if (!fileContent || typeof fileContent !== 'string') return false;
+        const hasODRCHeader = /^##\s+ODRC Updates/m.test(fileContent);
+        const odrcPatterns = [
+            /^-\s+NEW\s+(DECISION|OPEN|RULE|CONSTRAINT):/m,
+            /^-\s+RESOLVE\s+OPEN:/m
+        ];
+        const patternMatches = odrcPatterns.filter(p => p.test(fileContent)).length;
+        return hasODRCHeader || patternMatches >= 2;
+    }
+
+    // Extract metadata from ODRC content header block
+    function extractODRCMetadata(fileContent) {
+        if (!fileContent || typeof fileContent !== 'string') return { ideaSlug: null, sessionNumber: null, appId: null };
+        const ideaMatch = fileContent.match(/^#\s*Idea:\s*(.+)$/m);
+        const sessionMatch = fileContent.match(/^#\s*Session:\s*(.+)$/m);
+        const appMatch = fileContent.match(/^#\s*App:\s*(.+)$/m);
+        return {
+            ideaSlug: ideaMatch ? ideaMatch[1].trim() : null,
+            sessionNumber: sessionMatch ? sessionMatch[1].trim() : null,
+            appId: appMatch ? appMatch[1].trim() : null
+        };
+    }
+
+    // Extract the ODRC Updates section from a larger document
+    function extractODRCSection(fileContent) {
+        if (!fileContent || typeof fileContent !== 'string') return null;
+        const odrcStart = fileContent.indexOf('## ODRC Updates');
+        if (odrcStart === -1) return null;
+        return fileContent.substring(odrcStart);
+    }
+
+    // Duplicate detection — compare new item against existing concepts
+    // Returns array of { existingConcept, overlapPercent } for potential matches
+    function findDuplicateConcepts(newDescription, existingConcepts) {
+        const COMMON_WORDS = new Set(['the', 'is', 'a', 'an', 'and', 'for', 'to', 'in', 'of', 'on', 'at', 'by', 'or', 'be', 'as', 'it', 'with', 'that', 'this', 'are', 'was', 'not', 'but', 'from', 'have', 'has', 'will', 'should', 'can', 'all', 'each', 'when', 'if', 'no']);
+        const tokenize = (text) => text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 1 && !COMMON_WORDS.has(w));
+        const newWords = new Set(tokenize(newDescription));
+        if (newWords.size === 0) return [];
+
+        const matches = [];
+        for (const concept of existingConcepts) {
+            const existingWords = new Set(tokenize(concept.content));
+            if (existingWords.size === 0) continue;
+            const shorter = Math.min(newWords.size, existingWords.size);
+            let overlap = 0;
+            for (const w of newWords) {
+                if (existingWords.has(w)) overlap++;
+            }
+            const overlapPercent = overlap / shorter;
+            if (overlapPercent > 0.5) {
+                matches.push({ existingConcept: concept, overlapPercent: Math.round(overlapPercent * 100) });
+            }
+        }
+        return matches.sort((a, b) => b.overlapPercent - a.overlapPercent);
+    }
+
+    // Execute ODRC import — write concepts, generate summary, add session log entry
+    async function executeODRCImport(uid, linkedIdea, checkedItems, globalIdeas, github, app) {
+        // 1. Execute concept updates via ODRCUpdateIngestionService.execute()
+        // Set ideaOrigin on each new concept to linkedIdea.id
+        const updatesForExecution = checkedItems.map(item => ({
+            ...item,
+            overrideIdeaId: item.action === 'create' ? linkedIdea.id : undefined
+        }));
+        const results = await ODRCUpdateIngestionService.execute(uid, updatesForExecution, globalIdeas);
+
+        const created = results.filter(r => r.action === 'create' && r.status === 'success').length;
+        const resolved = results.filter(r => r.action === 'resolve' && r.status === 'success').length;
+
+        // 2. Generate summary via ClaudeAPIService (best-effort)
+        let summary = `${created} concept(s) created, ${resolved} OPEN(s) resolved`;
+        try {
+            if (ClaudeAPIService.isConfigured()) {
+                summary = await ClaudeAPIService.call({
+                    model: 'claude-haiku-4-5-20251001',
+                    system: 'Generate a one-sentence summary of these ODRC updates for a session log. Be concise.',
+                    userMessage: checkedItems.map(i => `${i.action} ${i.type}: ${i.description}`).join('\n'),
+                    maxTokens: 200
+                });
+            }
+        } catch (e) {
+            console.warn('[CC] Summary generation failed, using default:', e.message);
+        }
+
+        // 3. Add session log entry
+        const sessionNum = (linkedIdea.sessionLog?.length || 0) + 1;
+        const sessionId = generateSessionId(sessionNum);
+        const slug = linkedIdea.slug || IdeaManager.generateSlug(linkedIdea.name);
+        const docPath = `docs/sessions/${slug}/${sessionId}.md`;
+
+        await IdeaManager.addSessionLogEntry(uid, linkedIdea.id, {
+            sessionId,
+            date: Date.now(),
+            docPath,
+            summary,
+            conceptsCreated: created,
+            conceptsResolved: resolved
+        });
+
+        // 4. Return results for display
+        return { created, resolved, summary, sessionId };
+    }
+
+    // =========================================================================
     // SESSION TYPES + SESSION BRIEF GENERATOR (v8.25.0 — Phase 2.1)
     // =========================================================================
 
@@ -6152,6 +6261,7 @@ Frame all exploration using the ODRC model (OPENs, Decisions, Rules, Constraints
         const [view, setView] = React.useState('dashboard');
         // (multi-app zip state managed in DashboardView)
         const [pendingSessionReturn, setPendingSessionReturn] = React.useState(null); // SESSION_RETURN.json auto-review (Phase B)
+        const [pendingOdrcImport, setPendingOdrcImport] = React.useState(null); // ODRC Updates from Chat session (Phase 3)
         const [githubToken, setGithubToken] = React.useState(() => {
             try { return localStorage.getItem('cc_token') || ''; } catch { return ''; }
         });
@@ -7233,7 +7343,25 @@ Frame all exploration using the ODRC model (OPENs, Decisions, Rules, Constraints
                                         if (file.relativePath.endsWith('.html') || file.relativePath === 'sw.js') {
                                             version = extractVersionFromHTML(content);
                                         }
-                                        
+
+                                        // Phase 3: Detect ODRC content in zip entries
+                                        if (isText && detectODRCContent(content)) {
+                                            console.log('[CC] ODRC content detected in zip entry:', file.relativePath);
+                                            const metadata = extractODRCMetadata(content);
+                                            const odrcSection = extractODRCSection(content);
+                                            const parsed = ODRCUpdateIngestionService.parse(odrcSection || content);
+                                            if (parsed.length > 0) {
+                                                setPendingOdrcImport({
+                                                    fileName: file.relativePath,
+                                                    fullContent: content,
+                                                    odrcSection: odrcSection || content,
+                                                    metadata,
+                                                    parsedUpdates: parsed,
+                                                    sourceApp: appId
+                                                });
+                                            }
+                                        }
+
                                         if (fileAction === 'skip') {
                                             // Handle SESSION_RETURN.json
                                             if (fileName === 'SESSION_RETURN.json' && isText) {
@@ -7615,7 +7743,26 @@ Frame all exploration using the ODRC model (OPENs, Decisions, Rules, Constraints
                     }
                     // Detect CLAUDE.md regardless of upload filename (e.g., Claude-2.md)
                     cleanedName = detectClaudeMd(cleanedName, isText ? content : null);
-                    
+
+                    // Phase 3: Detect ODRC content from Chat session output
+                    if (isText && detectODRCContent(content)) {
+                        console.log('[CC] ODRC content detected in single file:', file.name);
+                        const metadata = extractODRCMetadata(content);
+                        const odrcSection = extractODRCSection(content);
+                        const parsed = ODRCUpdateIngestionService.parse(odrcSection || content);
+                        if (parsed.length > 0) {
+                            setPendingOdrcImport({
+                                fileName: cleanedName,
+                                fullContent: content,
+                                odrcSection: odrcSection || content,
+                                metadata,
+                                parsedUpdates: parsed,
+                                sourceApp: suggestedApp
+                            });
+                            // Still stage the file for potential doc push, but ODRC modal takes priority
+                        }
+                    }
+
                     // Determine targetPath: use app-specific path if detected, else default logic
                     let targetPath;
                     if (suggestedApp === 'firebase-functions' && (cleanedName.endsWith('.yml') || cleanedName.endsWith('.yaml'))) {
@@ -8962,13 +9109,15 @@ Frame all exploration using the ODRC model (OPENs, Decisions, Rules, Constraints
                             onQuickRollback={quickRollback}
                             pendingSessionReturn={pendingSessionReturn}
                             setPendingSessionReturn={setPendingSessionReturn}
+                            pendingOdrcImport={pendingOdrcImport}
+                            setPendingOdrcImport={setPendingOdrcImport}
                             updateApp={updateApp}
                             globalConcepts={globalConcepts}
                             globalIdeas={globalIdeas}
                         />
                         </>
                     )}
-                    
+
                     {view === 'projects' && (
                         <div className="max-w-6xl mx-auto">
                             <div className="flex items-center gap-3 mb-6">
@@ -10016,7 +10165,7 @@ Frame all exploration using the ODRC model (OPENs, Decisions, Rules, Constraints
     // DASHBOARD VIEW
     // =========================================================================
     
-    function DashboardView({ apps, config, stagedFiles, setStagedFiles, github, onFileDrop, onRemove, onDeploy, onBatchDeploy, onPromote, activeDeployments, removeActiveDeployment, refreshing, onUpdateStagedFile, deployingRepos, showConfirm, showAlert, showPrompt, globalIssues, globalWorkItems, globalStreams, globalSessions, globalActivity, deployments, firebaseUid, setModal, linkIssuesToVersion, setView, rollbackSnapshots, onQuickRollback, pendingSessionReturn, setPendingSessionReturn, updateApp, globalConcepts, globalIdeas }) {
+    function DashboardView({ apps, config, stagedFiles, setStagedFiles, github, onFileDrop, onRemove, onDeploy, onBatchDeploy, onPromote, activeDeployments, removeActiveDeployment, refreshing, onUpdateStagedFile, deployingRepos, showConfirm, showAlert, showPrompt, globalIssues, globalWorkItems, globalStreams, globalSessions, globalActivity, deployments, firebaseUid, setModal, linkIssuesToVersion, setView, rollbackSnapshots, onQuickRollback, pendingSessionReturn, setPendingSessionReturn, pendingOdrcImport, setPendingOdrcImport, updateApp, globalConcepts, globalIdeas }) {
         const [selectedFileIds, setSelectedFileIds] = React.useState(new Set());
         const [deployTarget, setDeployTarget] = React.useState({ appId: 'command-center', target: 'test' });
         const [isDeploying, setIsDeploying] = React.useState(false);
@@ -11945,6 +12094,240 @@ Frame all exploration using the ODRC model (OPENs, Decisions, Rules, Constraints
                         </div>
                     </details>
                 )}
+
+                {/* === ODRCImportChecklistModal (v8.61.0 — Phase 3) === */}
+                {pendingOdrcImport?.showChecklist && (() => {
+                    const ODRCImportChecklistModalInner = () => {
+                        const [checkedItems, setCheckedItems] = React.useState(() =>
+                            pendingOdrcImport.parsedUpdates.map((u, i) => ({
+                                ...u,
+                                checked: true,
+                                index: i,
+                                duplicates: []
+                            }))
+                        );
+                        const [linkedIdeaId, setLinkedIdeaId] = React.useState(() => {
+                            // Try auto-link from metadata
+                            if (pendingOdrcImport.metadata?.ideaSlug) {
+                                const match = (globalIdeas || []).find(i =>
+                                    i.slug === pendingOdrcImport.metadata.ideaSlug ||
+                                    IdeaManager.generateSlug(i.name) === pendingOdrcImport.metadata.ideaSlug
+                                );
+                                if (match) return match.id;
+                            }
+                            if (pendingOdrcImport.metadata?.appId) {
+                                const appIdeas = (globalIdeas || []).filter(i => i.appId === pendingOdrcImport.metadata.appId && i.status === 'active');
+                                if (appIdeas.length > 0) return appIdeas[appIdeas.length - 1].id;
+                            }
+                            return null;
+                        });
+                        const [importing, setImporting] = React.useState(false);
+                        const [results, setResults] = React.useState(null);
+                        const [pushingDoc, setPushingDoc] = React.useState(false);
+
+                        const linkedIdea = (globalIdeas || []).find(i => i.id === linkedIdeaId);
+                        const activeIdeas = (globalIdeas || []).filter(i => i.status === 'active');
+                        const ideasByApp = React.useMemo(() => {
+                            const groups = {};
+                            activeIdeas.forEach(i => {
+                                const appName = i.appId ? (apps[i.appId]?.name || i.appId) : 'Unlinked';
+                                if (!groups[appName]) groups[appName] = [];
+                                groups[appName].push(i);
+                            });
+                            return groups;
+                        }, [activeIdeas, apps]);
+
+                        // Run duplicate detection on mount
+                        React.useEffect(() => {
+                            if (!linkedIdea) return;
+                            const ideaConcepts = (globalConcepts || []).filter(c => c.ideaOrigin === linkedIdea.id && c.status === 'active');
+                            setCheckedItems(prev => prev.map(item => {
+                                if (item.action !== 'create') return item;
+                                const dupes = findDuplicateConcepts(item.description, ideaConcepts);
+                                // Auto-uncheck RESOLVE items targeting already-resolved concepts
+                                if (item.action === 'resolve' && item.conceptId) {
+                                    const target = (globalConcepts || []).find(c => c.id === item.conceptId);
+                                    if (target && target.status === 'resolved') {
+                                        return { ...item, duplicates: dupes, checked: false, alreadyResolved: true };
+                                    }
+                                }
+                                return { ...item, duplicates: dupes };
+                            }));
+                        }, [linkedIdeaId]);
+
+                        // Also check RESOLVE items for already-resolved
+                        React.useEffect(() => {
+                            setCheckedItems(prev => prev.map(item => {
+                                if (item.action === 'resolve' && item.conceptId) {
+                                    const target = (globalConcepts || []).find(c => c.id === item.conceptId);
+                                    if (target && target.status === 'resolved') {
+                                        return { ...item, checked: false, alreadyResolved: true };
+                                    }
+                                }
+                                return item;
+                            }));
+                        }, [globalConcepts]);
+
+                        const updateItem = (index, updates) => {
+                            setCheckedItems(prev => prev.map((item, i) => i === index ? { ...item, ...updates } : item));
+                        };
+
+                        const selectedCount = checkedItems.filter(i => i.checked).length;
+
+                        const handleApply = async () => {
+                            if (!firebaseUid || !linkedIdea) return;
+                            setImporting(true);
+                            try {
+                                const selected = checkedItems.filter(i => i.checked);
+                                const importResults = await executeODRCImport(
+                                    firebaseUid, linkedIdea, selected, globalIdeas || [], github, linkedIdea.appId ? apps[linkedIdea.appId] : null
+                                );
+
+                                // Dual-track: push full doc to repo if it has full content
+                                if (github && linkedIdea.appId && pendingOdrcImport.fullContent) {
+                                    const app = apps[linkedIdea.appId];
+                                    const repo = app?.repos?.test || app?.testRepo || app?.repos?.prod || app?.prodRepo;
+                                    if (repo) {
+                                        setPushingDoc(true);
+                                        try {
+                                            const slug = linkedIdea.slug || IdeaManager.generateSlug(linkedIdea.name);
+                                            const docPath = `docs/sessions/${slug}/${importResults.sessionId}.md`;
+                                            const existing = await github.getFile(repo, docPath).catch(() => null);
+                                            await github.createOrUpdateFile(repo, docPath, pendingOdrcImport.fullContent,
+                                                `Add session doc: ${linkedIdea.name} ${importResults.sessionId}`, existing?.sha || null);
+                                            console.log('[CC] Pushed session doc to', repo, docPath);
+                                        } catch (e) {
+                                            console.warn('[CC] Doc push failed:', e.message);
+                                        }
+                                        setPushingDoc(false);
+                                    }
+                                }
+
+                                setResults(importResults);
+                            } catch (e) {
+                                await showAlert(`Import failed: ${e.message}`, '❌ Error');
+                            }
+                            setImporting(false);
+                        };
+
+                        const close = () => setPendingOdrcImport(null);
+
+                        // Phase display for results
+                        const prevPhase = linkedIdea ? computeIdeaPhase((globalConcepts || []).filter(c => c.ideaOrigin === linkedIdea.id)) : null;
+
+                        if (results) {
+                            const newPhase = linkedIdea ? computeIdeaPhase((globalConcepts || []).filter(c => c.ideaOrigin === linkedIdea.id)) : null;
+                            return (
+                                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={close}>
+                                    <div className="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+                                        <div className="text-center">
+                                            <div className="text-4xl mb-3">✅</div>
+                                            <h2 className="text-lg font-bold mb-2">Session {results.sessionId} imported</h2>
+                                            <p className="text-slate-300 mb-1">
+                                                {results.created} concept{results.created !== 1 ? 's' : ''} created, {results.resolved} OPEN{results.resolved !== 1 ? 's' : ''} resolved
+                                            </p>
+                                            {prevPhase && newPhase && prevPhase !== newPhase && (
+                                                <p className="text-sm text-amber-300 mt-2">
+                                                    Phase: {prevPhase} → {newPhase}
+                                                </p>
+                                            )}
+                                            <p className="text-xs text-slate-500 mt-2">{results.summary}</p>
+                                            {pushingDoc && <p className="text-xs text-slate-400 mt-1 animate-pulse">Pushing session doc to repo...</p>}
+                                        </div>
+                                        <div className="flex justify-center mt-4">
+                                            <button onClick={close} className="px-4 py-2 rounded text-sm bg-indigo-600 hover:bg-indigo-500 font-medium">Done</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        }
+
+                        return (
+                            <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={close}>
+                                <div className="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                                    {/* Header */}
+                                    <div className="flex items-center justify-between p-4 border-b border-slate-700">
+                                        <div>
+                                            <h2 className="text-lg font-bold">💡 ODRC Import — {linkedIdea?.name || 'Select Idea'}</h2>
+                                            <div className="text-xs text-slate-400 mt-0.5">
+                                                {pendingOdrcImport.parsedUpdates.length} item{pendingOdrcImport.parsedUpdates.length !== 1 ? 's' : ''} parsed from {pendingOdrcImport.fileName}
+                                            </div>
+                                        </div>
+                                        <button onClick={close} className="text-slate-400 hover:text-white text-xl">✕</button>
+                                    </div>
+
+                                    {/* Idea Picker */}
+                                    <div className="px-4 pt-3 pb-2 border-b border-slate-700/50">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm text-slate-400">Linked Idea:</span>
+                                            <select value={linkedIdeaId || ''} onChange={e => setLinkedIdeaId(e.target.value || null)}
+                                                className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm flex-1">
+                                                <option value="">— Select Idea —</option>
+                                                {Object.entries(ideasByApp).map(([appName, ideas]) => (
+                                                    <optgroup key={appName} label={appName}>
+                                                        {ideas.map(i => <option key={i.id} value={i.id}>{i.name} {i.slug ? `(${i.slug})` : ''}</option>)}
+                                                    </optgroup>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    {/* Checklist */}
+                                    <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                                        {checkedItems.map((item, idx) => (
+                                            <div key={idx} className={`rounded-lg border p-3 ${item.checked ? 'border-slate-600 bg-slate-800' : 'border-slate-700/50 bg-slate-800/50 opacity-60'}`}>
+                                                <div className="flex items-start gap-3">
+                                                    <input type="checkbox" checked={item.checked} onChange={e => updateItem(idx, { checked: e.target.checked })}
+                                                        className="mt-1 rounded bg-slate-700 border-slate-600" />
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="flex items-center gap-2 mb-1">
+                                                            <select value={item.action} onChange={e => updateItem(idx, { action: e.target.value })}
+                                                                className="bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 text-xs">
+                                                                <option value="create">NEW</option>
+                                                                <option value="resolve">RESOLVE</option>
+                                                            </select>
+                                                            <select value={item.type} onChange={e => updateItem(idx, { type: e.target.value })}
+                                                                className="bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 text-xs">
+                                                                {ODRC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                                                            </select>
+                                                        </div>
+                                                        <textarea value={item.description} onChange={e => updateItem(idx, { description: e.target.value })}
+                                                            rows={2} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-300 resize-y" />
+                                                        {item.alreadyResolved && (
+                                                            <div className="text-xs text-amber-400 mt-1">⚠ Already resolved — auto-unchecked</div>
+                                                        )}
+                                                        {item.duplicates?.length > 0 && (
+                                                            <div className="mt-2 bg-amber-900/20 border border-amber-800/50 rounded p-2">
+                                                                <div className="text-xs text-amber-300 mb-1">⚠ Similar to existing ({item.duplicates[0].overlapPercent}% overlap):</div>
+                                                                <div className="text-xs text-slate-400 italic">"{item.duplicates[0].existingConcept.content.slice(0, 100)}"</div>
+                                                                <div className="flex gap-2 mt-1.5">
+                                                                    <button onClick={() => updateItem(idx, { checked: true, duplicates: [] })}
+                                                                        className="text-xs px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded">Create Anyway</button>
+                                                                    <button onClick={() => updateItem(idx, { checked: false })}
+                                                                        className="text-xs px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded">Skip</button>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Footer */}
+                                    <div className="flex items-center justify-between p-4 border-t border-slate-700">
+                                        <button onClick={close} className="px-4 py-2 rounded text-sm bg-slate-700 hover:bg-slate-600">Cancel</button>
+                                        <button onClick={handleApply} disabled={importing || selectedCount === 0 || !linkedIdeaId}
+                                            className="px-4 py-2 rounded text-sm bg-indigo-600 hover:bg-indigo-500 font-medium disabled:opacity-50">
+                                            {importing ? '⏳ Importing...' : `Apply ${selectedCount} Update${selectedCount !== 1 ? 's' : ''}`}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    };
+                    return <ODRCImportChecklistModalInner />;
+                })()}
             </div>
         );
     }
@@ -13008,11 +13391,38 @@ The deploy will appear in Command Center's Session tab for one-click deployment.
                                 </div>
                             </div>
                         </div>
-                        <button 
+                        <button
                             onClick={() => setPendingSessionReturn({ ...pendingSessionReturn })}
                             className="px-3 py-1.5 text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg transition-colors">
                             Open Auto-Review
                         </button>
+                    </div>
+                )}
+
+                {/* Phase 3: Pending ODRC Import banner */}
+                {pendingOdrcImport && (
+                    <div className="bg-purple-900/30 border border-purple-600/50 rounded-xl p-4 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <span className="text-2xl">💡</span>
+                            <div>
+                                <div className="text-sm font-medium text-purple-200">ODRC Updates detected — {pendingOdrcImport.parsedUpdates.length} item{pendingOdrcImport.parsedUpdates.length !== 1 ? 's' : ''}</div>
+                                <div className="text-xs text-purple-400/70 mt-0.5">
+                                    From: {pendingOdrcImport.fileName}
+                                    {pendingOdrcImport.metadata?.ideaSlug && ` · Idea: ${pendingOdrcImport.metadata.ideaSlug}`}
+                                    {pendingOdrcImport.metadata?.sessionNumber && ` · Session: ${pendingOdrcImport.metadata.sessionNumber}`}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex gap-2">
+                            <button onClick={() => setPendingOdrcImport(null)}
+                                className="px-3 py-1.5 text-xs font-medium bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors">
+                                Dismiss
+                            </button>
+                            <button onClick={() => setPendingOdrcImport({ ...pendingOdrcImport, showChecklist: true })}
+                                className="px-3 py-1.5 text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors">
+                                Review & Import
+                            </button>
+                        </div>
                     </div>
                 )}
                 
