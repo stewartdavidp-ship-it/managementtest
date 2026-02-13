@@ -2819,8 +2819,22 @@
         const ideaIdMatch = fileContent.match(/^#\s*IdeaId:\s*(.+)$/m); // v8.64.0 A3
         const sessionMatch = fileContent.match(/^#\s*Session:\s*(.+)$/m);
         const appMatch = fileContent.match(/^#\s*App:\s*(.+)$/m);
+
+        // v8.64.2: Validate ideaSlug — reject placeholder markers like "(new — needs creation)"
+        let ideaSlug = ideaMatch ? ideaMatch[1].trim() : null;
+        if (ideaSlug && (
+            ideaSlug.startsWith('(') ||       // parenthesized markers
+            ideaSlug.includes('—') ||          // em-dash (non-slug char)
+            ideaSlug.includes('…') ||          // ellipsis
+            /^(new|none|tbd|todo|create)/i.test(ideaSlug) || // common placeholder words
+            !/[a-z0-9]/.test(ideaSlug)         // no alphanumeric chars at all
+        )) {
+            console.log('[CC] extractODRCMetadata: rejected invalid slug:', ideaSlug);
+            ideaSlug = null;
+        }
+
         return {
-            ideaSlug: ideaMatch ? ideaMatch[1].trim() : null,
+            ideaSlug,
             ideaId: ideaIdMatch ? ideaIdMatch[1].trim() : null, // v8.64.0 A3: Firebase key for unambiguous routing
             sessionNumber: sessionMatch ? sessionMatch[1].trim() : null,
             appId: appMatch ? appMatch[1].trim() : null
@@ -12050,8 +12064,15 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                                 }
 
                                 if (appIdeas.length > 0) {
-                                    console.log('[CC] ODRC auto-link: app-scope fallback, picked:', appIdeas[appIdeas.length - 1].name);
-                                    return appIdeas[appIdeas.length - 1].id;
+                                    // v8.64.2: Sort by sequence (desc) then createdAt (desc) to pick most recent idea
+                                    const sorted = [...appIdeas].sort((a, b) => {
+                                        const seqDiff = (b.sequence || 0) - (a.sequence || 0);
+                                        if (seqDiff !== 0) return seqDiff;
+                                        return (b.createdAt || '').localeCompare(a.createdAt || '');
+                                    });
+                                    console.log('[CC] ODRC auto-link: app-scope fallback, picked:', sorted[0].name,
+                                        `(seq: ${sorted[0].sequence || 0}, ${appIdeas.length} candidates)`);
+                                    return sorted[0].id;
                                 }
                             }
 
