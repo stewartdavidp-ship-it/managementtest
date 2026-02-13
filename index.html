@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.63.1">
+    <meta name="version" content="8.63.2">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -23,6 +23,7 @@
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .fade-in { animation: fadeIn 0.2s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
     </style>
 </head>
 <body>
@@ -6124,6 +6125,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
         // Get most recent active deployment (for legacy code that expects single)
         const activeDeployment = activeDeployments[0] || null;
         const [modal, setModal] = React.useState(null);
+        const [showHistoryPanel, setShowHistoryPanel] = React.useState(false); // N6: Deploy History slide-out
         const [dialog, setDialog] = React.useState(null); // { type: 'alert'|'confirm'|'prompt', title, message, defaultValue, onConfirm, onCancel }
         const [settings, setSettings] = React.useState({ createTag: true, updateServiceWorker: true });
         
@@ -8623,27 +8625,15 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                                         )}
                                     </button>
                                 ))}
-                                {/* Settings dropdown */}
-                                <div className="relative group">
-                                    <button
-                                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1 ${
-                                            ['config', 'settings'].includes(view) ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
-                                        }`}
-                                    >
-                                        <span>⚙️</span> Settings
-                                        <span className="text-xs opacity-60">▼</span>
-                                    </button>
-                                    <div className="absolute top-full left-0 mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 min-w-[160px]">
-                                        <button onClick={() => setView('config')}
-                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-700 first:rounded-t-lg ${view === 'config' ? 'bg-indigo-600/30 text-indigo-300' : 'text-slate-300'}`}>
-                                            🌍 Environments
-                                        </button>
-                                        <button onClick={() => setView('settings')}
-                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-700 last:rounded-b-lg ${view === 'settings' ? 'bg-indigo-600/30 text-indigo-300' : 'text-slate-300'}`}>
-                                            🔑 Settings
-                                        </button>
-                                    </div>
-                                </div>
+                                {/* Settings — flat tab (N5: Environments moved to Infrastructure satellite) */}
+                                <button
+                                    onClick={() => setView('settings')}
+                                    className={`px-3 py-1.5 rounded text-sm flex items-center gap-1 ${
+                                        view === 'settings' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                    }`}
+                                >
+                                    <span>⚙️</span> Settings
+                                </button>
                                 {/* Satellite Launcher */}
                                 <div className="relative group">
                                     <button className="px-2.5 py-1.5 rounded text-sm flex items-center gap-1 text-slate-400 hover:text-white hover:bg-slate-700" title="Satellite Apps">
@@ -8689,7 +8679,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                                 💡 Ideas
                             </button>
                             <button
-                                onClick={() => setView('history')}
+                                onClick={() => setShowHistoryPanel(true)}
                                 className="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded-full font-medium transition-colors"
                             >
                                 📜 Deploy History
@@ -8792,6 +8782,28 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                                 )}
                             </div>
                         ))}
+                    </div>
+                )}
+
+                {/* v8.63.2 N6: Deploy History slide-out panel */}
+                {showHistoryPanel && (
+                    <div className="fixed inset-0 z-50 flex justify-end" onClick={(e) => { if (e.target === e.currentTarget) setShowHistoryPanel(false); }}>
+                        <div className="w-full max-w-4xl bg-slate-900 border-l border-slate-700 shadow-2xl overflow-y-auto animate-slideIn"
+                            style={{ animation: 'slideIn 0.2s ease-out' }}>
+                            <div className="sticky top-0 bg-slate-900 border-b border-slate-700 px-6 py-4 flex items-center justify-between z-10">
+                                <h2 className="text-lg font-bold flex items-center gap-2">📜 Deploy History</h2>
+                                <button onClick={() => setShowHistoryPanel(false)}
+                                    className="p-2 rounded hover:bg-slate-700 text-slate-400 hover:text-white">✕</button>
+                            </div>
+                            <div className="p-6">
+                                <HistoryView
+                                    deployments={deployments} apps={apps}
+                                    onRollback={(d) => { setShowHistoryPanel(false); setModal({ type: 'rollback', data: d }); }}
+                                    globalWorkItems={globalWorkItems}
+                                    globalSessions={globalSessions}
+                                />
+                            </div>
+                        </div>
                     </div>
                 )}
 
@@ -8966,14 +8978,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                         </div>
                     )}
                     
-                    {view === 'history' && (
-                        <HistoryView 
-                            deployments={deployments} apps={apps}
-                            onRollback={(d) => setModal({ type: 'rollback', data: d })}
-                            globalWorkItems={globalWorkItems}
-                            globalSessions={globalSessions}
-                        />
-                    )}
+                    {/* [v8.63.2] Deploy History moved to slide-out panel (N6) */}
                     
                     {view === 'session' && (
                         <div className="text-center py-20">
@@ -9002,17 +9007,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                             globalOrphanCommits={globalOrphanCommits} />
                     )}
 
-                    {view === 'config' && (
-                        <ConfigView 
-                            config={config} 
-                            onConfigChange={handleConfigChange}
-                            showAlert={showAlert}
-                            showConfirm={showConfirm}
-                            github={github}
-                            availableRepos={availableRepos}
-                            onRefreshRepos={refreshRepos}
-                        />
-                    )}
+                    {/* [v8.63.2] Environments moved to Infrastructure satellite (N5) */}
                     
                     {view === 'settings' && (
                         <SettingsView token={githubToken} setToken={setGithubToken} settings={settings} setSettings={setSettings} repoCount={availableRepos.length} syncStatus={syncStatus} onForceSync={handleForceSync} config={config} onConfigChange={handleConfigChange} firebaseUid={firebaseUid} firebaseUser={firebaseUser} teamMembers={teamMembers} teamMembership={teamMembership} showAlert={showAlert} showConfirm={showConfirm} completionFileSettings={completionFileSettings} />

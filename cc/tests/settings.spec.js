@@ -1,14 +1,11 @@
 const { test, expect } = require('@playwright/test');
 
-// Helper to navigate to Settings
+// Helper to navigate to Settings (v8.63.2: Settings is a flat tab)
 async function navigateToSettings(page) {
     await page.goto('/');
     await page.waitForSelector('[data-testid="app-loaded"]', { timeout: 15000 });
-    // The Settings nav section button is "⚙️ Settings ▼", hover to reveal dropdown
-    const navBtn = page.locator('button:has-text("Settings")').first();
-    await navBtn.hover();
-    // Click the specific "🔑 Settings" dropdown item
-    await page.locator('button:has-text("🔑 Settings")').click();
+    // Click the Settings tab directly (flat nav since v8.63.2)
+    await page.locator('button:has-text("Settings")').click();
     await page.waitForTimeout(500);
 }
 
