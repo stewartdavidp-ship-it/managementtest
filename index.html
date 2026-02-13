@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.65.0">
+    <meta name="version" content="8.65.1">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -10134,6 +10134,9 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
     // =========================================================================
     
     function DashboardView({ apps, config, stagedFiles, setStagedFiles, github, onFileDrop, onRemove, onDeploy, onBatchDeploy, onPromote, activeDeployments, removeActiveDeployment, refreshing, onUpdateStagedFile, deployingRepos, showConfirm, showAlert, showPrompt, globalIssues, globalWorkItems, globalStreams, globalSessions, globalActivity, deployments, firebaseUid, setModal, linkIssuesToVersion, setView, rollbackSnapshots, onQuickRollback, pendingSessionReturn, setPendingSessionReturn, pendingOdrcImport, setPendingOdrcImport, updateApp, globalConcepts, globalIdeas, addNotification, setViewPayload }) {
+        // v8.65.1: Projects/Apps section collapsed by default
+        const [projectsCollapsed, setProjectsCollapsed] = React.useState(true);
+
         // v8.65.0: Work cards state
         const [workCardContinueIdea, setWorkCardContinueIdea] = React.useState(null);
         const workCardRecentIdeas = getRecentIdeas(globalIdeas, globalConcepts, apps, 5);
@@ -10687,49 +10690,63 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                     </div>
                 )}
                 
-                {/* Slim drop zone */}
-                <div className="space-y-6">
-                    <div 
-                        onDrop={onFileDrop} 
-                        onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-indigo-500', 'bg-indigo-900/20', 'py-8'); e.currentTarget.classList.remove('py-3', 'border-slate-600'); }}
-                        onDragLeave={e => { e.currentTarget.classList.remove('border-indigo-500', 'bg-indigo-900/20', 'py-8'); e.currentTarget.classList.add('py-3', 'border-slate-600'); }}
-                        className="border-2 border-dashed border-slate-600 rounded-lg py-3 px-4 text-center transition-all duration-200 cursor-pointer"
-                    >
-                        <input type="file" multiple accept=".html,.js,.css,.json,.zip,.yml,.yaml,.md,.txt" onChange={onFileDrop} className="hidden" id="upload" />
-                        <label htmlFor="upload" className="cursor-pointer flex items-center justify-center gap-3 text-sm text-slate-400">
-                            <Icons.Upload />
-                            <span>Drop files to deploy, or drop a session package to review</span>
-                            <span className="text-xs text-slate-500">Multi-file • ZIP • Multi-app</span>
-                        </label>
-                    </div>
+                {/* Slim drop zone — always visible */}
+                <div
+                    onDrop={onFileDrop}
+                    onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-indigo-500', 'bg-indigo-900/20', 'py-8'); e.currentTarget.classList.remove('py-3', 'border-slate-600'); }}
+                    onDragLeave={e => { e.currentTarget.classList.remove('border-indigo-500', 'bg-indigo-900/20', 'py-8'); e.currentTarget.classList.add('py-3', 'border-slate-600'); }}
+                    className="border-2 border-dashed border-slate-600 rounded-lg py-3 px-4 text-center transition-all duration-200 cursor-pointer"
+                >
+                    <input type="file" multiple accept=".html,.js,.css,.json,.zip,.yml,.yaml,.md,.txt" onChange={onFileDrop} className="hidden" id="upload" />
+                    <label htmlFor="upload" className="cursor-pointer flex items-center justify-center gap-3 text-sm text-slate-400">
+                        <Icons.Upload />
+                        <span>Drop files to deploy, or drop a session package to review</span>
+                        <span className="text-xs text-slate-500">Multi-file • ZIP • Multi-app</span>
+                    </label>
+                </div>
 
-                    {/* Phase 3: Pending ODRC Import banner */}
-                    {pendingOdrcImport && (
-                        <div className="bg-purple-900/30 border border-purple-600/50 rounded-xl p-4 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <span className="text-2xl">💡</span>
-                                <div>
-                                    <div className="text-sm font-medium text-purple-200">ODRC Updates detected — {pendingOdrcImport.parsedUpdates.length} item{pendingOdrcImport.parsedUpdates.length !== 1 ? 's' : ''}</div>
-                                    <div className="text-xs text-purple-400/70 mt-0.5">
-                                        From: {pendingOdrcImport.fileName}
-                                        {pendingOdrcImport.metadata?.ideaId && ` · IdeaId: ${pendingOdrcImport.metadata.ideaId}`}
-                                        {pendingOdrcImport.metadata?.ideaSlug && ` · Idea: ${pendingOdrcImport.metadata.ideaSlug}`}
-                                        {pendingOdrcImport.metadata?.sessionNumber && ` · Session: ${pendingOdrcImport.metadata.sessionNumber}`}
-                                    </div>
+                {/* Phase 3: Pending ODRC Import banner — always visible */}
+                {pendingOdrcImport && (
+                    <div className="bg-purple-900/30 border border-purple-600/50 rounded-xl p-4 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <span className="text-2xl">💡</span>
+                            <div>
+                                <div className="text-sm font-medium text-purple-200">ODRC Updates detected — {pendingOdrcImport.parsedUpdates.length} item{pendingOdrcImport.parsedUpdates.length !== 1 ? 's' : ''}</div>
+                                <div className="text-xs text-purple-400/70 mt-0.5">
+                                    From: {pendingOdrcImport.fileName}
+                                    {pendingOdrcImport.metadata?.ideaId && ` · IdeaId: ${pendingOdrcImport.metadata.ideaId}`}
+                                    {pendingOdrcImport.metadata?.ideaSlug && ` · Idea: ${pendingOdrcImport.metadata.ideaSlug}`}
+                                    {pendingOdrcImport.metadata?.sessionNumber && ` · Session: ${pendingOdrcImport.metadata.sessionNumber}`}
                                 </div>
                             </div>
-                            <div className="flex gap-2">
-                                <button onClick={() => setPendingOdrcImport(null)}
-                                    className="px-3 py-1.5 text-xs font-medium bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors">
-                                    Dismiss
-                                </button>
-                                <button onClick={() => setPendingOdrcImport({ ...pendingOdrcImport, showChecklist: true })}
-                                    className="px-3 py-1.5 text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors">
-                                    Review & Import
-                                </button>
-                            </div>
                         </div>
-                    )}
+                        <div className="flex gap-2">
+                            <button onClick={() => setPendingOdrcImport(null)}
+                                className="px-3 py-1.5 text-xs font-medium bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors">
+                                Dismiss
+                            </button>
+                            <button onClick={() => setPendingOdrcImport({ ...pendingOdrcImport, showChecklist: true })}
+                                className="px-3 py-1.5 text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors">
+                                Review & Import
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* v8.65.1: Collapsible Projects/Apps toggle */}
+                <div
+                    onClick={() => setProjectsCollapsed(prev => !prev)}
+                    className="flex items-center gap-2 cursor-pointer text-sm text-slate-400 hover:text-slate-200 transition-colors py-2 select-none"
+                >
+                    <svg className={'w-4 h-4 transition-transform ' + (projectsCollapsed ? '' : 'rotate-90')} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                    <span className="font-semibold">Projects / Apps</span>
+                    <span className="text-xs text-slate-600">{configuredApps.length} configured</span>
+                    {stagedFiles.length > 0 && <span className="text-xs text-green-400 font-mono ml-auto">📦 {stagedFiles.length} staged</span>}
+                </div>
+
+                {/* Projects/Apps content — hidden by default */}
+                <div style={{ display: projectsCollapsed ? 'none' : 'block' }}>
+                <div className="space-y-6">
 
                     {/* Staged Files — Multi-App or Single-File view */}
                     {stagedFiles.length > 0 && stagedFiles[0]?.multiApp && (() => {
@@ -12077,6 +12094,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                         </div>
                     </details>
                 )}
+                </div>{/* END v8.65.1: collapsible Projects/Apps wrapper */}
 
                 {/* ═══ v8.65.0: Recent Work Cards ═══ */}
                 {workCardRecentIdeas.length > 0 && (
