@@ -26,8 +26,11 @@ test.describe('App Loading', () => {
     test('shows navigation with all sections', async ({ page }) => {
         await page.goto('/');
         await page.waitForSelector('[data-testid="app-loaded"]', { timeout: 15000 });
-        await expect(page.locator('button:has-text("Deploy")').first()).toBeVisible();
-        await expect(page.locator('button:has-text("Plan")').first()).toBeVisible();
+        // v8.63.0: Flat tab navigation (Home, Projects, Ideas, Jobs, Sessions, Settings)
+        await expect(page.locator('button:has-text("Home")').first()).toBeVisible();
+        await expect(page.locator('button:has-text("Projects")').first()).toBeVisible();
+        await expect(page.locator('button:has-text("Ideas")').first()).toBeVisible();
+        await expect(page.locator('button:has-text("Jobs")').first()).toBeVisible();
         await expect(page.locator('button:has-text("Sessions")').first()).toBeVisible();
         await expect(page.locator('button:has-text("Settings")').first()).toBeVisible();
     });

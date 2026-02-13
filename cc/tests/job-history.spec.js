@@ -1,12 +1,11 @@
 const { test, expect } = require('@playwright/test');
 
-// Helper to navigate to Job History
+// Helper to navigate to Job History (v8.63.0: Jobs is a top-level tab)
 async function navigateToJobHistory(page) {
     await page.goto('/');
     await page.waitForSelector('[data-testid="app-loaded"]', { timeout: 15000 });
-    // Hover the Plan button to open dropdown, then click Job History
-    await page.locator('button:has-text("Plan")').hover();
-    await page.locator('button:has-text("Job History")').click();
+    // Click the Jobs tab directly (flat nav since v8.63.0)
+    await page.locator('button:has-text("Jobs")').click();
     // Wait for the view to render
     await page.waitForTimeout(500);
 }
@@ -25,7 +24,7 @@ function seedJobData(jobs) {
 }
 
 test.describe('Job History View', () => {
-    test('navigates to Job History from Plan dropdown', async ({ page }) => {
+    test('navigates to Job History from Jobs tab', async ({ page }) => {
         await navigateToJobHistory(page);
         await expect(page.locator('text=Job History').first()).toBeVisible();
     });
@@ -61,8 +60,7 @@ test.describe('Job History View', () => {
                 }
             });
         });
-        await page.locator('button:has-text("Plan")').hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await expect(page.locator('text=Test task description')).toBeVisible({ timeout: 5000 });
     });
 
@@ -81,8 +79,7 @@ test.describe('Job History View', () => {
                 }
             });
         });
-        await page.locator('button:has-text("Plan")').hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await page.waitForTimeout(500);
         // Select "New" filter
         await page.selectOption('[data-testid="state-filter"]', 'new');
@@ -112,8 +109,7 @@ test.describe('Job History View', () => {
                 }
             });
         });
-        await page.locator('button:has-text("Plan")').hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await page.waitForTimeout(500);
         // Click to expand
         await page.locator('text=Expandable job').click();
@@ -153,8 +149,7 @@ test.describe('Job History View', () => {
                 }
             });
         });
-        await page.locator('button:has-text("Plan")').first().hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await page.waitForTimeout(1000);
         // The warning emoji should show on the card header
         await expect(page.locator('[title]').filter({ hasText: '⚠' }).first()).toBeVisible({ timeout: 5000 });
@@ -177,8 +172,7 @@ test.describe('Job History View', () => {
                 }
             });
         });
-        await page.locator('button:has-text("Plan")').first().hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await page.waitForTimeout(1000);
         await expect(page.locator('text=/unclassified jobs/i')).toBeVisible({ timeout: 5000 });
     });

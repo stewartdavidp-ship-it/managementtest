@@ -39,8 +39,7 @@ test.describe('Bundle Assembly (Phase 2)', () => {
     });
 
     test('Package for Check button is visible for reviewed jobs', async ({ page }) => {
-        await page.locator('button:has-text("Plan")').first().hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await page.waitForTimeout(1000);
         // Click job card to expand it (action buttons are inside expanded detail)
         await page.locator('text=Test bundleable task').click();
@@ -50,8 +49,7 @@ test.describe('Bundle Assembly (Phase 2)', () => {
     });
 
     test('Bundle assembly modal shows progress steps', async ({ page }) => {
-        await page.locator('button:has-text("Plan")').first().hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await page.waitForTimeout(1000);
         // Expand the card first
         await page.locator('text=Test bundleable task').click();
@@ -63,8 +61,7 @@ test.describe('Bundle Assembly (Phase 2)', () => {
     });
 
     test('Mark as Checked button visible for reviewed jobs', async ({ page }) => {
-        await page.locator('button:has-text("Plan")').first().hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await page.waitForTimeout(1000);
         // Expand the card
         await page.locator('text=Test bundleable task').click();
@@ -74,8 +71,7 @@ test.describe('Bundle Assembly (Phase 2)', () => {
     });
 
     test('Import ODRC Updates button visible for reviewed jobs', async ({ page }) => {
-        await page.locator('button:has-text("Plan")').first().hover();
-        await page.locator('button:has-text("Job History")').click();
+        await page.locator('button:has-text("Jobs")').click();
         await page.waitForTimeout(1000);
         // Expand the card
         await page.locator('text=Test bundleable task').click();

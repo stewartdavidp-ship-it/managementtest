@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.63.0">
+    <meta name="version" content="8.63.1">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -8602,64 +8602,48 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                                     title="Refresh versions">
                                     <Icons.Refresh />
                                 </button>
-                                {/* Consolidated Navigation - 4 main sections (v8.53.0) */}
+                                {/* v8.63.0: Flat tab navigation (N1-N4 nav restructure) */}
                                 {[
-                                    { id: 'deploy', icon: '🚀', label: 'Deploy', views: ['dashboard', 'history'] },
-                                    { id: 'plan', icon: '📋', label: 'Plan', views: ['backlog', 'projects', 'ideas', 'jobHistory'] },
-                                    { id: 'sessions', icon: '📝', label: 'Sessions', views: ['session'] },
-                                    { id: 'settings', icon: '⚙️', label: 'Settings', views: ['config', 'setup', 'settings'] }
-                                ].map(section => (
-                                    <div key={section.id} className="relative group">
-                                        {section.views.length === 1 ? (
-                                            <button
-                                                onClick={() => setView(section.views[0])}
-                                                className={`px-3 py-1.5 rounded text-sm flex items-center gap-1 ${
-                                                    section.views.includes(view) ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
-                                                }`}
-                                            >
-                                                <span>{section.icon}</span> {section.label}
-                                            </button>
-                                        ) : (
-                                            <>
-                                        <button
-                                            className={`px-3 py-1.5 rounded text-sm flex items-center gap-1 ${
-                                                section.views.includes(view) ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
-                                            }`}
-                                        >
-                                            <span>{section.icon}</span> {section.label}
-                                            {section.id === 'plan' && globalCompletionJobs.filter(j => j.state === 'new').length > 0 && (
-                                                <span className="px-1.5 py-0.5 bg-blue-600 text-white rounded-full text-xs font-bold ml-1">{globalCompletionJobs.filter(j => j.state === 'new').length}</span>
-                                            )}
-                                            <span className="text-xs opacity-60">▼</span>
-                                        </button>
-                                        {/* Dropdown */}
-                                        <div className="absolute top-full left-0 mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 min-w-[160px]">
-                                            {section.views.map(v => (
-                                                <button
-                                                    key={v}
-                                                    onClick={() => setView(v)}
-                                                    className={`w-full text-left px-4 py-2 text-sm capitalize hover:bg-slate-700 first:rounded-t-lg last:rounded-b-lg ${
-                                                        view === v ? 'bg-indigo-600/30 text-indigo-300' : 'text-slate-300'
-                                                    }`}
-                                                >
-                                                    {v === 'dashboard' && '📋 Dashboard'}
-                                                    {v === 'history' && '📜 Deploy History'}
-                                                    {v === 'backlog' && '📋 Backlog'}
-                                                    {v === 'projects' && '📂 Projects'}
-                                                    {v === 'ideas' && '💡 Ideas'}
-                                                    {v === 'jobHistory' && '📦 Job History'}
-                                                    {v === 'session' && '📋 Activity Journal'}
-                                                    {v === 'config' && '🌍 Environments'}
-
-                                                    {v === 'setup' && '🆕 Setup New App'}
-                                                    {v === 'settings' && '🔑 Settings'}
-                                                </button>
-                                            ))}
-                                        </div>
-                                            </>
+                                    { id: 'home', icon: '🏠', label: 'Home', view: 'dashboard' },
+                                    { id: 'projects', icon: '📁', label: 'Projects', view: 'projects' },
+                                    { id: 'ideas', icon: '💡', label: 'Ideas', view: 'ideas' },
+                                    { id: 'jobs', icon: '📦', label: 'Jobs', view: 'jobHistory', badge: globalCompletionJobs.filter(j => j.state === 'new').length },
+                                    { id: 'sessions', icon: '📝', label: 'Sessions', view: 'session' }
+                                ].map(tab => (
+                                    <button
+                                        key={tab.id}
+                                        onClick={() => setView(tab.view)}
+                                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1 ${
+                                            (view === tab.view || (tab.id === 'home' && view === 'history')) ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                        }`}
+                                    >
+                                        <span>{tab.icon}</span> {tab.label}
+                                        {tab.badge > 0 && (
+                                            <span className="px-1.5 py-0.5 bg-blue-600 text-white rounded-full text-xs font-bold ml-1">{tab.badge}</span>
                                         )}
-                                    </div>
+                                    </button>
                                 ))}
+                                {/* Settings dropdown */}
+                                <div className="relative group">
+                                    <button
+                                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1 ${
+                                            ['config', 'settings'].includes(view) ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                        }`}
+                                    >
+                                        <span>⚙️</span> Settings
+                                        <span className="text-xs opacity-60">▼</span>
+                                    </button>
+                                    <div className="absolute top-full left-0 mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 min-w-[160px]">
+                                        <button onClick={() => setView('config')}
+                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-700 first:rounded-t-lg ${view === 'config' ? 'bg-indigo-600/30 text-indigo-300' : 'text-slate-300'}`}>
+                                            🌍 Environments
+                                        </button>
+                                        <button onClick={() => setView('settings')}
+                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-700 last:rounded-b-lg ${view === 'settings' ? 'bg-indigo-600/30 text-indigo-300' : 'text-slate-300'}`}>
+                                            🔑 Settings
+                                        </button>
+                                    </div>
+                                </div>
                                 {/* Satellite Launcher */}
                                 <div className="relative group">
                                     <button className="px-2.5 py-1.5 rounded text-sm flex items-center gap-1 text-slate-400 hover:text-white hover:bg-slate-700" title="Satellite Apps">
@@ -8699,10 +8683,16 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                         <div className="mt-3 pt-3 border-t border-slate-700 flex items-center gap-2 flex-wrap">
                             <span className="text-xs text-slate-500 mr-2">⚡ Quick:</span>
                             <button
-                                onClick={() => setView('backlog')}
+                                onClick={() => setView('ideas')}
                                 className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-full font-medium transition-colors"
                             >
-                                💡 Add Idea
+                                💡 Ideas
+                            </button>
+                            <button
+                                onClick={() => setView('history')}
+                                className="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded-full font-medium transition-colors"
+                            >
+                                📜 Deploy History
                             </button>
                             {stagedFiles.length > 0 && (
                                 <button
@@ -8990,7 +8980,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                             <div className="text-4xl mb-4">📋</div>
                             <h2 className="text-xl font-bold mb-2">Activity Journal</h2>
                             <p className="text-slate-400">Coming soon — unified timeline of all sessions, specs, and builds.</p>
-                            <p className="text-slate-500 text-sm mt-2">Use Plan → Ideas to manage ideation sessions.</p>
+                            <p className="text-slate-500 text-sm mt-2">Use the Ideas tab to manage ideation sessions.</p>
                         </div>
                     )}
                     
@@ -11886,7 +11876,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                                     ⚠️ {productMetrics.staleItems.length} item{productMetrics.staleItems.length !== 1 ? 's' : ''} stale (7+ days in-progress)
                                 </div>
                             )}
-                            <button onClick={() => setView('backlog')} className="text-xs text-indigo-400 hover:text-indigo-300">View All →</button>
+                            <button onClick={() => setView('ideas')} className="text-xs text-indigo-400 hover:text-indigo-300">View All →</button>
                         </div>
                     </details>
                 )}

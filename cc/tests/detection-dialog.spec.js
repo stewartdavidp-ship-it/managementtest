@@ -1,10 +1,10 @@
 const { test, expect } = require('@playwright/test');
 
 test.describe('Detection Dialog', () => {
-    test('shows completion file count in Plan nav badge', async ({ page }) => {
+    test('shows completion file count in Jobs nav badge', async ({ page }) => {
         await page.goto('/');
         await page.waitForSelector('[data-testid="app-loaded"]', { timeout: 15000 });
-        // Seed new jobs — the Plan nav should show a badge count
+        // Seed new jobs — the Jobs tab should show a badge count
         await page.evaluate(() => {
             MockFirebaseDb._seed({
                 'command-center': {
@@ -17,18 +17,18 @@ test.describe('Detection Dialog', () => {
                 }
             });
         });
-        // Wait for the badge to appear near the Plan nav button
+        // Wait for the badge to appear near the Jobs tab button
         // The badge shows the count of 'new' state jobs as a blue pill
         await page.waitForTimeout(1000);
         await expect(page.locator('.bg-blue-600')).toBeVisible({ timeout: 5000 });
     });
 
-    test('job history accessible from Plan dropdown', async ({ page }) => {
+    test('job history accessible from Jobs tab', async ({ page }) => {
         await page.goto('/');
         await page.waitForSelector('[data-testid="app-loaded"]', { timeout: 15000 });
-        await page.locator('button:has-text("Plan")').hover();
-        const jobHistoryLink = page.locator('button:has-text("Job History")');
-        await expect(jobHistoryLink).toBeVisible();
+        // v8.63.0: Jobs is a top-level tab, click directly
+        await page.locator('button:has-text("Jobs")').click();
+        await expect(page.locator('text=Job History').first()).toBeVisible();
     });
 
     test('CompletionFileService listen updates state', async ({ page }) => {
