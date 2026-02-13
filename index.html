@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.63.5">
+    <meta name="version" content="8.64.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2814,12 +2814,14 @@
 
     // Extract metadata from ODRC content header block
     function extractODRCMetadata(fileContent) {
-        if (!fileContent || typeof fileContent !== 'string') return { ideaSlug: null, sessionNumber: null, appId: null };
+        if (!fileContent || typeof fileContent !== 'string') return { ideaSlug: null, ideaId: null, sessionNumber: null, appId: null };
         const ideaMatch = fileContent.match(/^#\s*Idea:\s*(.+)$/m);
+        const ideaIdMatch = fileContent.match(/^#\s*IdeaId:\s*(.+)$/m); // v8.64.0 A3
         const sessionMatch = fileContent.match(/^#\s*Session:\s*(.+)$/m);
         const appMatch = fileContent.match(/^#\s*App:\s*(.+)$/m);
         return {
             ideaSlug: ideaMatch ? ideaMatch[1].trim() : null,
+            ideaId: ideaIdMatch ? ideaIdMatch[1].trim() : null, // v8.64.0 A3: Firebase key for unambiguous routing
             sessionNumber: sessionMatch ? sessionMatch[1].trim() : null,
             appId: appMatch ? appMatch[1].trim() : null
         };
@@ -3072,7 +3074,7 @@ Generate a markdown document with these sections:
 - Prior Session Summary — if sessions exist, summarize the most recent
 - Current ODRC State — all active concepts grouped by type (OPEN, DECISION, RULE, CONSTRAINT)
 - Expected Output Format — provide the COMPLETE output specification including:
-  (a) Header block with all six metadata lines: title with idea display name, date (YYYY-MM-DD), session number with short description, idea slug, app ID, and a one-line context summary of what the session should accomplish
+  (a) Header block with all seven metadata lines: title with idea display name, date (YYYY-MM-DD), session number with short description, idea slug, IdeaId (the Firebase key from the brief header), app ID, and a one-line context summary of what the session should accomplish
   (b) ODRC Updates section showing all five line types with examples that demonstrate substantive descriptions with rationale:
       - RESOLVE OPEN: "original open text" → resolution with rationale
       - NEW DECISION: "what was decided AND why — enough context to understand the decision standalone"
@@ -3237,6 +3239,7 @@ Frame everything in ODRC terms. The brief should make it easy for Chat to pick u
             brief += `# Date: ${new Date().toISOString().slice(0, 10)}\n`;
             brief += `# Session: S-${new Date().toISOString().slice(0, 10).replace(/-/g, '-')}-${String(sessionNum).padStart(3, '0')} (describe this session)\n`;
             brief += `# Idea: ${slug}\n`;
+            brief += `# IdeaId: ${idea.id}\n`; // v8.64.0 A4: Firebase key for unambiguous routing
             brief += `# App: ${appId}\n`;
             brief += `# Context: (one-line summary of what this session accomplished)\n\n`;
             brief += `- RESOLVE OPEN: "original open text" → resolution with rationale\n`;
@@ -5555,7 +5558,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
 
         // Update editable fields of an idea
         async update(uid, ideaId, updates) {
-            const allowed = ['name', 'description', 'status', 'slug', 'phase'];
+            const allowed = ['name', 'description', 'status', 'phase']; // v8.64.0 A2: slug removed — immutable after creation
             const filtered = {};
             for (const key of allowed) {
                 if (updates[key] !== undefined) filtered[key] = updates[key];
@@ -5659,6 +5662,67 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
             };
             ref.on('value', handler);
             return () => ref.off('value', handler);
+        },
+
+        // v8.64.0 A1: One-time backfill for Ideas created before data model extension
+        // Idempotent — skips Ideas that already have all fields, safe to run on every load
+        async backfillMissingFields(uid) {
+            const snapshot = await this._ref(uid).once('value');
+            const data = snapshot.val();
+            if (!data) return;
+
+            let backfillCount = 0;
+            const updates = {};
+
+            for (const [key, idea] of Object.entries(data)) {
+                const patch = {};
+                let needsUpdate = false;
+
+                // Backfill slug — generate from name, ensure unique within app scope
+                if (!idea.slug) {
+                    const base = this.generateSlug(idea.name || 'untitled');
+                    const siblings = Object.values(data).filter(i =>
+                        i.appId === idea.appId && i.slug && i.id !== idea.id
+                    );
+                    const existingSlugs = siblings.map(i => i.slug);
+                    // Also include slugs we're generating in this batch to avoid collisions
+                    for (const [otherKey, otherPatch] of Object.entries(updates)) {
+                        if (otherPatch.slug) existingSlugs.push(otherPatch.slug);
+                    }
+                    let slug = base;
+                    if (existingSlugs.includes(slug)) {
+                        let counter = 2;
+                        while (existingSlugs.includes(`${slug}-${counter}`)) counter++;
+                        slug = `${base}-${counter}`;
+                    }
+                    patch.slug = slug;
+                    needsUpdate = true;
+                }
+
+                if (!idea.sessionLog) { patch.sessionLog = []; needsUpdate = true; }
+                if (idea.lastSessionDate === undefined) { patch.lastSessionDate = null; needsUpdate = true; }
+                if (idea.phase === undefined) { patch.phase = null; needsUpdate = true; }
+                if (idea.parentIdeaId === undefined) { patch.parentIdeaId = null; needsUpdate = true; }
+
+                if (needsUpdate) {
+                    updates[key] = patch;
+                    backfillCount++;
+                }
+            }
+
+            // Write all patches in a single multi-path update
+            if (backfillCount > 0) {
+                const multiUpdate = {};
+                for (const [key, patch] of Object.entries(updates)) {
+                    for (const [field, value] of Object.entries(patch)) {
+                        multiUpdate[`${key}/${field}`] = value;
+                    }
+                }
+                await this._ref(uid).update(multiUpdate);
+                console.log(`[CC] Idea backfill: updated ${backfillCount} idea(s) with missing fields`);
+            } else {
+                console.log('[CC] Idea backfill: all ideas up to date');
+            }
         }
     };
 
@@ -6413,6 +6477,10 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                     // Listen for ODRC concepts and ideas (Ideation Platform)
                     unsubscribeConcepts = ConceptManager.listen(u.uid, setGlobalConcepts);
                     unsubscribeIdeas = IdeaManager.listen(u.uid, setGlobalIdeas);
+                    // v8.64.0 A1: Backfill missing fields on existing Ideas (idempotent, async)
+                    IdeaManager.backfillMissingFields(u.uid).catch(e =>
+                        console.error('[CC] Idea backfill failed:', e)
+                    );
                     // Listen for completion jobs and settings (Ingestion Pipeline)
                     unsubscribeCompletionJobs = CompletionFileService.listen(u.uid, setGlobalCompletionJobs);
                     unsubscribeCompletionSettings = CompletionFileSettings.listen(u.uid, setCompletionFileSettings);
@@ -10549,6 +10617,7 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                                     <div className="text-sm font-medium text-purple-200">ODRC Updates detected — {pendingOdrcImport.parsedUpdates.length} item{pendingOdrcImport.parsedUpdates.length !== 1 ? 's' : ''}</div>
                                     <div className="text-xs text-purple-400/70 mt-0.5">
                                         From: {pendingOdrcImport.fileName}
+                                        {pendingOdrcImport.metadata?.ideaId && ` · IdeaId: ${pendingOdrcImport.metadata.ideaId}`}
                                         {pendingOdrcImport.metadata?.ideaSlug && ` · Idea: ${pendingOdrcImport.metadata.ideaSlug}`}
                                         {pendingOdrcImport.metadata?.sessionNumber && ` · Session: ${pendingOdrcImport.metadata.sessionNumber}`}
                                     </div>
@@ -11925,19 +11994,60 @@ Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At t
                                 duplicates: []
                             }))
                         );
+                        // v8.64.0 A5: Three-priority auto-link cascade with diagnostic logging
                         const [linkedIdeaId, setLinkedIdeaId] = React.useState(() => {
-                            // Try auto-link from metadata
-                            if (pendingOdrcImport.metadata?.ideaSlug) {
-                                const match = (globalIdeas || []).find(i =>
-                                    i.slug === pendingOdrcImport.metadata.ideaSlug ||
-                                    IdeaManager.generateSlug(i.name) === pendingOdrcImport.metadata.ideaSlug
+                            const meta = pendingOdrcImport.metadata;
+                            const ideas = globalIdeas || [];
+
+                            // Priority 1: Direct Firebase ID match (unambiguous)
+                            if (meta?.ideaId) {
+                                const match = ideas.find(i => i.id === meta.ideaId);
+                                if (match) {
+                                    console.log('[CC] ODRC auto-link: matched by IdeaId:', meta.ideaId);
+                                    return match.id;
+                                }
+                                console.log('[CC] ODRC auto-link: IdeaId not found:', meta.ideaId);
+                            }
+
+                            // Priority 2: Slug match (stored slug or computed from current name)
+                            if (meta?.ideaSlug) {
+                                const match = ideas.find(i =>
+                                    i.slug === meta.ideaSlug ||
+                                    IdeaManager.generateSlug(i.name) === meta.ideaSlug
                                 );
-                                if (match) return match.id;
+                                if (match) {
+                                    console.log('[CC] ODRC auto-link: matched by slug:', meta.ideaSlug, '→', match.name);
+                                    return match.id;
+                                }
+                                console.log('[CC] ODRC auto-link: slug not found:', meta.ideaSlug);
                             }
-                            if (pendingOdrcImport.metadata?.appId) {
-                                const appIdeas = (globalIdeas || []).filter(i => i.appId === pendingOdrcImport.metadata.appId && i.status === 'active');
-                                if (appIdeas.length > 0) return appIdeas[appIdeas.length - 1].id;
+
+                            // Priority 3: App-scoped fallback — try direct appId, then name/key resolution
+                            if (meta?.appId) {
+                                let appIdeas = ideas.filter(i => i.appId === meta.appId && i.status === 'active');
+
+                                // If direct appId match fails, try matching metadata against app keys/names
+                                if (appIdeas.length === 0 && typeof apps === 'object') {
+                                    const metaAppLower = meta.appId.toLowerCase().trim();
+                                    const matchedAppId = Object.keys(apps).find(id => {
+                                        const app = apps[id];
+                                        return id.toLowerCase() === metaAppLower ||
+                                            (app.name || '').toLowerCase() === metaAppLower ||
+                                            (app.project || '').toLowerCase() === metaAppLower;
+                                    });
+                                    if (matchedAppId) {
+                                        appIdeas = ideas.filter(i => i.appId === matchedAppId && i.status === 'active');
+                                        console.log('[CC] ODRC auto-link: app name resolved:', meta.appId, '→', matchedAppId);
+                                    }
+                                }
+
+                                if (appIdeas.length > 0) {
+                                    console.log('[CC] ODRC auto-link: app-scope fallback, picked:', appIdeas[appIdeas.length - 1].name);
+                                    return appIdeas[appIdeas.length - 1].id;
+                                }
                             }
+
+                            console.log('[CC] ODRC auto-link: no match found. metadata:', JSON.stringify(meta));
                             return null;
                         });
                         const [importing, setImporting] = React.useState(false);
@@ -16078,7 +16188,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                 </h1>
                                 <div className="flex items-center gap-3 mt-1">
                                     {selectedIdea.description && <p className="text-sm text-slate-400">{selectedIdea.description}</p>}
-                                    {selectedIdea.slug && <span className="text-xs text-slate-500 font-mono">{selectedIdea.slug}</span>}
+                                    {selectedIdea.slug && <span className="text-xs text-slate-500 font-mono">slug: {selectedIdea.slug}</span>}
                                     {selectedIdea.lastSessionDate && (
                                         <span className={`text-xs ${
                                             Date.now() - new Date(selectedIdea.lastSessionDate).getTime() > 14 * 24 * 60 * 60 * 1000 ? 'text-amber-400' : 'text-slate-500'
