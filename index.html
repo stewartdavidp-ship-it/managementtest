@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.66.0">
+    <meta name="version" content="8.67.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -3098,7 +3098,22 @@
             };
         }
 
+        // v8.67.0: Enrich with lifecycle fields if active session exists
+        if (linkedIdea.activeSession) {
+            sessionLogEntry.status = 'complete';
+            sessionLogEntry.completedAt = new Date().toISOString();
+            sessionLogEntry.ideaPhaseAtStart = linkedIdea.activeSession.ideaPhaseAtStart;
+            sessionLogEntry.ideaPhaseAtEnd = linkedIdea.phase || computeIdeaPhase(
+                (await ConceptManager.getByIdea(uid, linkedIdea.id)) || []
+            );
+        }
+
         await IdeaManager.addSessionLogEntry(uid, linkedIdea.id, sessionLogEntry);
+
+        // v8.67.0: Clear active session after successful import
+        if (linkedIdea.activeSession) {
+            await IdeaManager.completeSession(uid, linkedIdea.id);
+        }
 
         // 4. Return results for display
         return { created, resolved, summary, sessionId: sessionLogEntry.sessionId };
@@ -3166,6 +3181,8 @@
         // v8.62.0 B1: Determine session type from idea state
         getSessionType(idea, concepts) {
             const phase = idea.phase || computeIdeaPhase(concepts);
+            if (phase === 'inception') return 'exploration';
+            if (phase === 'complete') return 'exploration';
             const hasSpec = (idea.sessionLog || []).some(s => s.type === 'spec');
             if (phase === 'spec-ready' && hasSpec) return 'claude-md';
             if (phase === 'spec-ready') return 'spec';
@@ -3192,7 +3209,7 @@
 
         // v8.62.0 B1: Three-type system prompt — exploration, spec, claude-md
         // v8.65.2 B3: Stripped embedded instructions — skills handle ODRC framework, output format, session protocol
-        getSystemPrompt(sessionType) {
+        getSystemPrompt(sessionType, phase = null) {
             switch (sessionType) {
                 case 'spec':
                     return `You are generating a lean session brief for a SPECIFICATION session.
@@ -3283,8 +3300,8 @@ Generate a markdown document with these sections:
 - Current ODRC State
 - Session Metadata`;
 
-                default: // exploration
-                    return `You are generating a lean session brief for a Claude Chat ideation session.
+                default: { // exploration
+                    let prompt = `You are generating a lean session brief for a Claude Chat ideation session.
 The developer has skills loaded in claude.ai that handle ODRC framework, session structure, output format, and session protocol. The brief should NOT repeat ODRC definitions, output templates, or behavioral instructions — skills handle all of that.
 
 Generate a markdown document with ONLY these sections:
@@ -3297,6 +3314,22 @@ Generate a markdown document with ONLY these sections:
 - Session Metadata — idea slug, IdeaId, app ID, session number (needed for ODRC output routing)
 
 Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all instructions.`;
+
+                    if (phase === 'inception') {
+                        prompt += `\n\nINCEPTION PHASE: This is a new, unvalidated idea. Add an "Inception Validation" section to the brief BEFORE the Session Goal, with this content:
+
+## Inception Validation
+This is a new idea that hasn't been validated yet. Before exploring:
+1. Challenge the idea name — does it accurately describe the concept?
+2. Pressure-test the topic sentence — is it specific enough to scope work?
+3. Confirm the end goal — what does "done" look like for this idea?
+
+Spend the first 3-5 minutes on validation. If answers are confident, move on.
+If vague, suggest stepping back to refine the idea definition before deep exploration.`;
+                    }
+
+                    return prompt;
+                }
             }
         },
 
@@ -3312,7 +3345,7 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
             try {
                 const brief = await ClaudeAPIService.call({
                     model: 'claude-sonnet-4-20250514',
-                    system: this.getSystemPrompt(sessionType),
+                    system: this.getSystemPrompt(sessionType, ideaContext.phase),
                     userMessage: this.buildUserMessage(ideaContext, appContext, odrcState, lens, effectiveMode),
                     maxTokens: 4096
                 });
@@ -3389,6 +3422,9 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                 msg += `- Date: ${new Date(ideaContext.latestSession.date).toLocaleDateString()}\n`;
                 msg += `- Summary: ${ideaContext.latestSession.summary}\n`;
                 msg += `- Created: ${ideaContext.latestSession.conceptsCreated} concepts, Resolved: ${ideaContext.latestSession.conceptsResolved}\n\n`;
+                if (ideaContext.latestSession.debriefSummary) {
+                    msg += `**Prior Session Context (Debrief):**\n${ideaContext.latestSession.debriefSummary}\n\n`;
+                }
             }
 
             if (ideaContext.sessionLog.length > 1) {
@@ -3425,6 +3461,16 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
             let brief = `# ${titlePrefix} — ${ideaContext.name} (Session ${sessionNum})\n`;
             brief += `App: ${appContext.name} | Phase: ${ideaContext.phase} | Session Type: ${sessionType} | Generated: ${new Date().toLocaleString()}\n\n`;
             brief += `---\n\n`;
+            if (ideaContext.phase === 'inception') {
+                brief += `## Inception Validation\n`;
+                brief += `This is a new idea that hasn't been validated yet. Before exploring:\n`;
+                brief += `1. Challenge the idea name — does it accurately describe the concept?\n`;
+                brief += `2. Pressure-test the topic sentence — is it specific enough to scope work?\n`;
+                brief += `3. Confirm the end goal — what does "done" look like for this idea?\n\n`;
+                brief += `Spend the first 3-5 minutes on validation. If answers are confident, move on.\n`;
+                brief += `If vague, suggest stepping back to refine the idea definition before deep exploration.\n\n`;
+                brief += `---\n\n`;
+            }
             if (sessionType === 'claude-md') {
                 brief += `## CLAUDE.md Generation Goal\nProduce a CLAUDE.md from the existing specification using the locked template structure. Validate all implementation details.\n\n`;
             } else if (sessionType === 'spec') {
@@ -5708,7 +5754,12 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                 chain: entry.chain || null,
                 debriefSummary: entry.debriefSummary || null,
                 nextSession: entry.nextSession || null,
-                schemaVersion: entry.schemaVersion || null
+                schemaVersion: entry.schemaVersion || null,
+                // v8.67.0: Session lifecycle fields
+                status: entry.status || null,
+                completedAt: entry.completedAt || null,
+                ideaPhaseAtStart: entry.ideaPhaseAtStart || null,
+                ideaPhaseAtEnd: entry.ideaPhaseAtEnd || null
             });
             await this._ref(uid).child(ideaId).update({
                 sessionLog,
@@ -5716,6 +5767,64 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                 updatedAt: new Date().toISOString()
             });
             console.log('[CC] Added session log entry:', entry.sessionId, 'to idea:', ideaId);
+        },
+
+        // v8.67.0: Phase advancement
+        async advancePhase(uid, ideaId, newPhase) {
+            const validPhases = ['inception', 'exploring', 'converging', 'spec-ready', 'complete'];
+            if (!validPhases.includes(newPhase)) throw new Error(`Invalid phase: ${newPhase}`);
+            await this._ref(uid).child(ideaId).update({
+                phase: newPhase,
+                phaseUpdatedAt: new Date().toISOString()
+            });
+            console.log(`[CC] Idea ${ideaId} phase → ${newPhase}`);
+        },
+
+        // v8.67.0: Session lifecycle — activate
+        async activateSession(uid, ideaId, sessionData) {
+            const ideaRef = this._ref(uid).child(ideaId);
+            const snap = await ideaRef.child('activeSession').once('value');
+            if (snap.val()) throw new Error('Idea already has an active session');
+            await ideaRef.child('activeSession').set({
+                sessionId: sessionData.sessionId,
+                status: 'active',
+                createdAt: new Date().toISOString(),
+                lastActivityAt: new Date().toISOString(),
+                briefDownloaded: false,
+                artifactsReceived: 0,
+                ideaPhaseAtStart: sessionData.ideaPhaseAtStart
+            });
+            console.log(`[CC] Session ${sessionData.sessionId} activated on idea ${ideaId}`);
+        },
+
+        // v8.67.0: Session lifecycle — complete
+        async completeSession(uid, ideaId) {
+            await this._ref(uid).child(ideaId).child('activeSession').set(null);
+        },
+
+        // v8.67.0: Session lifecycle — abandon
+        async abandonSession(uid, ideaId, sessionId) {
+            const abandonedEntry = {
+                sessionId,
+                date: Date.now(),
+                summary: 'Session abandoned',
+                conceptsCreated: 0,
+                conceptsResolved: 0,
+                type: 'abandoned',
+                status: 'abandoned',
+                completedAt: new Date().toISOString()
+            };
+            await this.addSessionLogEntry(uid, ideaId, abandonedEntry);
+            await this._ref(uid).child(ideaId).child('activeSession').set(null);
+            console.log(`[CC] Session ${sessionId} abandoned on idea ${ideaId}`);
+        },
+
+        // v8.67.0: Session lifecycle — update activity
+        async updateSessionActivity(uid, ideaId, updates) {
+            await this._ref(uid).child(ideaId).child('activeSession').update({
+                ...updates,
+                lastActivityAt: new Date().toISOString()
+            });
         },
 
         // Create a new idea
@@ -5749,7 +5858,9 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                 status: 'active',
                 sessionLog: [],
                 lastSessionDate: null,
-                phase: null,
+                phase: 'inception',
+                phaseUpdatedAt: now,
+                activeSession: null,
                 createdAt: now,
                 updatedAt: now
             };
@@ -5931,6 +6042,8 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                 if (!idea.sessionLog) { patch.sessionLog = []; needsUpdate = true; }
                 if (idea.lastSessionDate === undefined) { patch.lastSessionDate = null; needsUpdate = true; }
                 if (idea.phase === undefined) { patch.phase = null; needsUpdate = true; }
+                if (idea.activeSession === undefined) { patch.activeSession = null; needsUpdate = true; }
+                if (idea.phaseUpdatedAt === undefined) { patch.phaseUpdatedAt = null; needsUpdate = true; }
                 if (idea.parentIdeaId === undefined) { patch.parentIdeaId = null; needsUpdate = true; }
 
                 // Backfill projectId — infer from appId's project if possible
@@ -12381,6 +12494,7 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                                 globalConcepts={globalConcepts}
                                 showAlert={showAlert}
                                 github={github}
+                                firebaseUid={firebaseUid}
                             />
                         )}
                     </React.Fragment>
@@ -15751,10 +15865,11 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
     // IdeaWorkCard — v8.65.0 Developer Landing Page card component
     // =========================================================================
     const PHASE_COLORS = {
+        inception:    { stripe: '#94a3b8', bg: 'rgba(148,163,184,0.15)', text: '#94a3b8' },
         exploring:    { stripe: '#3b82f6', bg: 'rgba(59,130,246,0.15)',  text: '#3b82f6' },
-        building:     { stripe: '#22c55e', bg: 'rgba(34,197,94,0.15)',   text: '#22c55e' },
         converging:   { stripe: '#f59e0b', bg: 'rgba(245,158,11,0.15)', text: '#f59e0b' },
-        'spec-ready': { stripe: '#f093fb', bg: 'rgba(240,147,251,0.15)', text: '#f093fb' }
+        'spec-ready': { stripe: '#f093fb', bg: 'rgba(240,147,251,0.15)', text: '#f093fb' },
+        complete:     { stripe: '#22c55e', bg: 'rgba(34,197,94,0.15)',   text: '#22c55e' }
     };
 
     function IdeaWorkCard({ idea, onNavigateIdea, onNavigateApp, onContinue }) {
@@ -15808,7 +15923,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
     // ExploreInChatModal — extracted from IdeasView (v8.63.4 fix: prevent remount flicker)
     // Must be top-level so React keeps a stable component reference across parent re-renders
     // =========================================================================
-    function ExploreInChatModal({ idea, onClose, configuredApps, apps, globalConcepts, showAlert, github }) {
+    function ExploreInChatModal({ idea, onClose, configuredApps, apps, globalConcepts, showAlert, github, firebaseUid }) {
         const app = idea.appId ? (configuredApps.find(a => a.id === idea.appId) || apps[idea.appId]) : null;
         const concepts = globalConcepts.filter(c => c.ideaOrigin === idea.id);
         const sessionNum = (idea.sessionLog?.length || 0) + 1;
@@ -15872,6 +15987,11 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
 
         const downloadZip = async () => {
             if (!briefText) return;
+            // v8.67.0: Guard against duplicate sessions
+            if (idea.activeSession) {
+                await showAlert(`Session ${idea.activeSession.sessionId} is already active for this idea. Complete or abandon it before starting a new session.`, '⚠️ Active Session');
+                return;
+            }
             try {
                 const zip = new JSZip();
                 const briefFilename = `CC-Session-Brief-${idea.name.replace(/[^a-zA-Z0-9]/g, '-')}-S${String(sessionNum).padStart(3, '0')}.md`;
@@ -15903,6 +16023,21 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 a.click();
                 URL.revokeObjectURL(url);
                 console.log('[CC] Downloaded session brief zip for', idea.name);
+
+                // v8.67.0: Activate session on idea after brief download
+                if (firebaseUid) {
+                    try {
+                        await IdeaManager.activateSession(firebaseUid, idea.id, {
+                            sessionId: generateSessionId(sessionNum),
+                            ideaPhaseAtStart: phase
+                        });
+                    } catch (e) {
+                        console.warn('[CC] Session activation failed:', e.message);
+                        if (e.message.includes('already has an active session')) {
+                            showAlert(`Session already active for this idea. Complete or abandon it first.`, '⚠️ Active Session');
+                        }
+                    }
+                }
             } catch (e) { await showAlert('Download failed: ' + e.message, '❌ Error'); }
         };
 
@@ -16958,7 +17093,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 {exploreIdea && (
                     <ExploreInChatModal idea={exploreIdea} onClose={() => setShowExploreModal(null)}
                         configuredApps={configuredApps} apps={apps} globalConcepts={globalConcepts}
-                        showAlert={showAlert} github={github} />
+                        showAlert={showAlert} github={github} firebaseUid={firebaseUid} />
                 )}
                 {showCreateIdeaModal && (
                     <CreateIdeaModal onClose={() => setShowCreateIdeaModal(false)} />
