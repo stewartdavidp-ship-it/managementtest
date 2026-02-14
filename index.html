@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.65.4">
+    <meta name="version" content="8.66.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2803,6 +2803,122 @@
     };
 
     // =========================================================================
+    // SESSION PACKAGE PROCESSOR (v8.66.0 — Session JSON Ingestion)
+    // =========================================================================
+
+    const SESSION_JSON_SCHEMA_VERSION = '1.0.0';
+
+    const SessionPackageProcessor = {
+        validate(sessionData) {
+            const errors = [];
+            const warnings = [];
+            const requiredRoot = ['schema_version', 'session_id', 'date', 'idea', 'app', 'context_summary', 'session_config', 'chain', 'odrc', 'debrief_summary', 'next_session', 'artifacts'];
+            for (const field of requiredRoot) {
+                if (sessionData[field] === undefined || sessionData[field] === null) {
+                    errors.push(`Missing required field: ${field}`);
+                }
+            }
+            if (sessionData.schema_version && sessionData.schema_version !== SESSION_JSON_SCHEMA_VERSION) {
+                warnings.push(`Schema version mismatch: expected ${SESSION_JSON_SCHEMA_VERSION}, got ${sessionData.schema_version}`);
+            }
+            if (sessionData.idea) {
+                if (!sessionData.idea.slug) errors.push('Missing idea.slug');
+                if (!sessionData.idea.id) errors.push('Missing idea.id');
+                const validPhases = ['inception', 'exploring', 'converging', 'spec-ready', 'complete'];
+                if (sessionData.idea.phase && !validPhases.includes(sessionData.idea.phase)) {
+                    warnings.push(`Unknown idea phase: ${sessionData.idea.phase}`);
+                }
+            }
+            if (sessionData.chain) {
+                if (typeof sessionData.chain.link_count !== 'number') errors.push('chain.link_count must be a number');
+                if (!Array.isArray(sessionData.chain.links)) errors.push('chain.links must be an array');
+            }
+            if (sessionData.odrc) {
+                if (!Array.isArray(sessionData.odrc.items)) errors.push('odrc.items must be an array');
+                const validTypes = ['decision', 'rule', 'constraint', 'open_new', 'open_resolved'];
+                (sessionData.odrc.items || []).forEach((item, i) => {
+                    if (!validTypes.includes(item.type)) errors.push(`odrc.items[${i}]: invalid type "${item.type}"`);
+                    if (!item.text) errors.push(`odrc.items[${i}]: missing text`);
+                });
+            }
+            if (sessionData.artifacts && !Array.isArray(sessionData.artifacts)) {
+                errors.push('artifacts must be an array');
+            }
+            return { valid: errors.length === 0, errors, warnings };
+        },
+
+        mapODRCType(jsonType) {
+            switch (jsonType) {
+                case 'decision': return 'DECISION';
+                case 'rule': return 'RULE';
+                case 'constraint': return 'CONSTRAINT';
+                case 'open_new': return 'OPEN';
+                case 'open_resolved': return 'OPEN';
+                default: return null;
+            }
+        },
+
+        toIngestionUpdates(sessionData) {
+            const updates = [];
+            for (const item of (sessionData.odrc?.items || [])) {
+                if (item.type === 'open_resolved') {
+                    updates.push({
+                        action: 'resolve',
+                        type: 'OPEN',
+                        description: item.original_open || item.text,
+                        conceptId: null,
+                        resolution: item.text
+                    });
+                } else {
+                    const mappedType = this.mapODRCType(item.type);
+                    if (mappedType) {
+                        updates.push({
+                            action: 'create',
+                            type: mappedType,
+                            description: item.text,
+                            targetIdea: null,
+                            sourceLink: item.source_link,
+                            isTangent: item.is_tangent || false,
+                            affinity: item.affinity || null
+                        });
+                    }
+                }
+            }
+            return updates;
+        },
+
+        buildSessionLogEntry(sessionData) {
+            const odrc = sessionData.odrc?.counts || {};
+            return {
+                sessionId: sessionData.session_id,
+                date: sessionData.date,
+                summary: sessionData.context_summary,
+                conceptsCreated: (odrc.decisions_new || 0) + (odrc.rules_new || 0) + (odrc.constraints_new || 0) + (odrc.opens_new || 0),
+                conceptsResolved: odrc.opens_resolved || 0,
+                type: sessionData.session_config?.mode || 'exploration',
+                chain: sessionData.chain ? {
+                    linkCount: sessionData.chain.link_count,
+                    summation: sessionData.chain.summation,
+                    totalConceptBlocks: (sessionData.chain.links || []).reduce((sum, l) => sum + (l.concept_blocks || 0), 0),
+                    totalElapsedMinutes: (sessionData.chain.links || []).reduce((sum, l) => sum + (l.elapsed_minutes || 0), 0)
+                } : null,
+                debriefSummary: sessionData.debrief_summary || null,
+                nextSession: sessionData.next_session || null,
+                schemaVersion: sessionData.schema_version
+            };
+        },
+
+        extractMetadata(sessionData) {
+            return {
+                ideaSlug: sessionData.idea?.slug || null,
+                ideaId: sessionData.idea?.id || null,
+                sessionNumber: sessionData.session_id || null,
+                appId: sessionData.app || null
+            };
+        }
+    };
+
+    // =========================================================================
     // ODRC CONTENT DETECTION (v8.61.0 — Idea-to-Chat Pipeline Phase 3)
     // =========================================================================
 
@@ -2884,9 +3000,14 @@
         return 'exploration';
     }
 
-    // v8.62.0 B4: Detect inbound artifact type — three-path routing
+    // v8.66.0: Detect inbound artifact type — four-path routing (added session-json)
     function detectInboundArtifactType(fileContent) {
         if (!fileContent || typeof fileContent !== 'string') return null;
+        // Check for session.json (highest priority — contains ODRC data inside JSON)
+        try {
+            const parsed = JSON.parse(fileContent);
+            if (parsed.schema_version && parsed.session_id && parsed.odrc) return 'session-json';
+        } catch {} // Not JSON, continue to other checks
         // Check for ODRC updates (existing detection)
         if (detectODRCContent(fileContent)) return 'odrc';
         // Check for CLAUDE.md (has both header and spec-id)
@@ -2922,7 +3043,7 @@
     }
 
     // Execute ODRC import — write concepts, generate summary, add session log entry
-    async function executeODRCImport(uid, linkedIdea, checkedItems, globalIdeas, github, app, sessionType) {
+    async function executeODRCImport(uid, linkedIdea, checkedItems, globalIdeas, github, app, sessionType, pendingImport) {
         // 1. Execute concept updates via ODRCUpdateIngestionService.execute()
         // Set ideaOrigin on each new concept to linkedIdea.id
         const updatesForExecution = checkedItems.map(item => ({
@@ -2949,24 +3070,38 @@
             console.warn('[CC] Summary generation failed, using default:', e.message);
         }
 
-        // 3. Add session log entry
-        const sessionNum = (linkedIdea.sessionLog?.length || 0) + 1;
-        const sessionId = generateSessionId(sessionNum);
-        const slug = linkedIdea.slug || IdeaManager.generateSlug(linkedIdea.name);
-        const docPath = `docs/sessions/${slug}/${sessionId}.md`;
+        // 3. Add session log entry — enriched from session.json if available
+        let sessionLogEntry;
+        if (pendingImport?.sessionData) {
+            sessionLogEntry = SessionPackageProcessor.buildSessionLogEntry(pendingImport.sessionData);
+            // Override with AI summary if we generated a meaningful one
+            const defaultSummary = `${created} concept(s) created, ${resolved} OPEN(s) resolved`;
+            if (summary !== defaultSummary) {
+                sessionLogEntry.summary = summary;
+            }
+            // Ensure actual counts from execution
+            sessionLogEntry.conceptsCreated = created;
+            sessionLogEntry.conceptsResolved = resolved;
+        } else {
+            const sessionNum = (linkedIdea.sessionLog?.length || 0) + 1;
+            const sessionId = generateSessionId(sessionNum);
+            const slug = linkedIdea.slug || IdeaManager.generateSlug(linkedIdea.name);
+            const docPath = `docs/sessions/${slug}/${sessionId}.md`;
+            sessionLogEntry = {
+                sessionId,
+                date: Date.now(),
+                docPath,
+                summary,
+                conceptsCreated: created,
+                conceptsResolved: resolved,
+                type: sessionType || 'exploration'
+            };
+        }
 
-        await IdeaManager.addSessionLogEntry(uid, linkedIdea.id, {
-            sessionId,
-            date: Date.now(),
-            docPath,
-            summary,
-            conceptsCreated: created,
-            conceptsResolved: resolved,
-            type: sessionType || 'exploration'
-        });
+        await IdeaManager.addSessionLogEntry(uid, linkedIdea.id, sessionLogEntry);
 
         // 4. Return results for display
-        return { created, resolved, summary, sessionId };
+        return { created, resolved, summary, sessionId: sessionLogEntry.sessionId };
     }
 
     // =========================================================================
@@ -5556,19 +5691,31 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
         },
 
         // Add session log entry — call after ODRC import
-        // v8.62.0 B2: Added type field for session type tracking
-        async addSessionLogEntry(uid, ideaId, { sessionId, date, docPath, summary, conceptsCreated, conceptsResolved, type }) {
+        // v8.66.0: Accepts enriched fields from session.json (chain, debriefSummary, nextSession)
+        async addSessionLogEntry(uid, ideaId, entry) {
             const snapshot = await this._ref(uid).child(ideaId).once('value');
             const idea = snapshot.val();
             if (!idea) throw new Error(`Idea not found: ${ideaId}`);
             const sessionLog = idea.sessionLog || [];
-            sessionLog.push({ sessionId, date, docPath, summary, conceptsCreated, conceptsResolved, type: type || 'exploration' });
+            sessionLog.push({
+                sessionId: entry.sessionId,
+                date: entry.date,
+                docPath: entry.docPath || null,
+                summary: entry.summary,
+                conceptsCreated: entry.conceptsCreated,
+                conceptsResolved: entry.conceptsResolved,
+                type: entry.type || 'exploration',
+                chain: entry.chain || null,
+                debriefSummary: entry.debriefSummary || null,
+                nextSession: entry.nextSession || null,
+                schemaVersion: entry.schemaVersion || null
+            });
             await this._ref(uid).child(ideaId).update({
                 sessionLog,
-                lastSessionDate: date,
+                lastSessionDate: entry.date,
                 updatedAt: new Date().toISOString()
             });
-            console.log('[CC] Added session log entry:', sessionId, 'to idea:', ideaId);
+            console.log('[CC] Added session log entry:', entry.sessionId, 'to idea:', ideaId);
         },
 
         // Create a new idea
@@ -7316,12 +7463,41 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                                             version = extractVersionFromHTML(content);
                                         }
 
-                                        // v8.62.0 B4: Three-path inbound artifact detection in zip entries
+                                        // v8.66.0: Four-path inbound artifact detection in zip entries
                                         if (isText) {
                                             const artifactType = detectInboundArtifactType(content);
                                             const hasOdrcSection = extractODRCSection(content);
 
-                                            if (artifactType === 'odrc') {
+                                            if (artifactType === 'session-json') {
+                                                console.log('[CC] session.json detected in zip entry:', file.relativePath);
+                                                try {
+                                                    const sessionData = JSON.parse(content);
+                                                    const validation = SessionPackageProcessor.validate(sessionData);
+                                                    if (validation.errors.length === 0) {
+                                                        const metadata = SessionPackageProcessor.extractMetadata(sessionData);
+                                                        const parsed = SessionPackageProcessor.toIngestionUpdates(sessionData);
+                                                        if (parsed.length > 0) {
+                                                            setPendingOdrcImport({
+                                                                fileName: file.relativePath,
+                                                                fullContent: content,
+                                                                odrcSection: null,
+                                                                metadata,
+                                                                parsedUpdates: parsed,
+                                                                sourceApp: appId,
+                                                                artifactType: 'session-json',
+                                                                sessionData
+                                                            });
+                                                        }
+                                                        if (validation.warnings.length > 0) {
+                                                            console.warn('[CC] session.json warnings:', validation.warnings);
+                                                        }
+                                                    } else {
+                                                        console.error('[CC] session.json validation failed:', validation.errors);
+                                                    }
+                                                } catch (e) {
+                                                    console.error('[CC] session.json parse error:', e.message);
+                                                }
+                                            } else if (artifactType === 'odrc') {
                                                 console.log('[CC] ODRC content detected in zip entry:', file.relativePath);
                                                 const metadata = extractODRCMetadata(content);
                                                 const parsed = ODRCUpdateIngestionService.parse(hasOdrcSection || content);
@@ -7735,12 +7911,41 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                     // Detect CLAUDE.md regardless of upload filename (e.g., Claude-2.md)
                     cleanedName = detectClaudeMd(cleanedName, isText ? content : null);
 
-                    // v8.62.0 B4: Three-path inbound artifact detection
+                    // v8.66.0: Four-path inbound artifact detection
                     if (isText) {
                         const artifactType = detectInboundArtifactType(content);
                         const hasOdrcSection = extractODRCSection(content);
 
-                        if (artifactType === 'odrc') {
+                        if (artifactType === 'session-json') {
+                            console.log('[CC] session.json detected in single file:', file.name);
+                            try {
+                                const sessionData = JSON.parse(content);
+                                const validation = SessionPackageProcessor.validate(sessionData);
+                                if (validation.errors.length === 0) {
+                                    const metadata = SessionPackageProcessor.extractMetadata(sessionData);
+                                    const parsed = SessionPackageProcessor.toIngestionUpdates(sessionData);
+                                    if (parsed.length > 0) {
+                                        setPendingOdrcImport({
+                                            fileName: cleanedName,
+                                            fullContent: content,
+                                            odrcSection: null,
+                                            metadata,
+                                            parsedUpdates: parsed,
+                                            sourceApp: suggestedApp,
+                                            artifactType: 'session-json',
+                                            sessionData
+                                        });
+                                    }
+                                    if (validation.warnings.length > 0) {
+                                        console.warn('[CC] session.json warnings:', validation.warnings);
+                                    }
+                                } else {
+                                    console.error('[CC] session.json validation failed:', validation.errors);
+                                }
+                            } catch (e) {
+                                console.error('[CC] session.json parse error:', e.message);
+                            }
+                        } else if (artifactType === 'odrc') {
                             // Pure ODRC file — existing flow
                             console.log('[CC] ODRC content detected in single file:', file.name);
                             const metadata = extractODRCMetadata(content);
@@ -12354,7 +12559,7 @@ Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all inst
                 // v8.62.0 B2: Detect session type from full content
                 const sessionType = pendingOdrcImport.fullContent ? detectSessionType(pendingOdrcImport.fullContent) : 'exploration';
                 const importResults = await executeODRCImport(
-                    firebaseUid, linkedIdea, selected, globalIdeas || [], github, linkedIdea.appId ? apps[linkedIdea.appId] : null, sessionType
+                    firebaseUid, linkedIdea, selected, globalIdeas || [], github, linkedIdea.appId ? apps[linkedIdea.appId] : null, sessionType, pendingOdrcImport
                 );
 
                 // Dual-track: push full doc to repo if it has full content
