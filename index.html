@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.67.0">
+    <meta name="version" content="8.68.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -4543,6 +4543,25 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         }
     };
 
+    // v8.68.0: Session package detection signatures
+    // TODO: Integrate with directory watching (File System Access API) when implemented.
+    // Currently used only as a matching utility — no active polling.
+    function buildSessionPackageSignatures(globalIdeas) {
+        return (globalIdeas || [])
+            .filter(i => i.status === 'active' && i.activeSession)
+            .map(idea => {
+                const slug = (idea.slug || '').replace(/[^a-z0-9-]/g, '');
+                return {
+                    ideaId: idea.id,
+                    ideaName: idea.name,
+                    sessionId: idea.activeSession.sessionId,
+                    pattern: new RegExp(
+                        `session-brief-${slug}-S\\d{3}\\.zip$`, 'i'
+                    )
+                };
+            });
+    }
+
     // =========================================================================
     // ICONS
     // =========================================================================
@@ -6093,6 +6112,18 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         return 'exploring';
     }
 
+    // v8.68.0: Format relative time ago
+    function formatTimeAgo(dateStr) {
+        if (!dateStr) return '';
+        const ms = Date.now() - new Date(dateStr).getTime();
+        const minutes = Math.floor(ms / 60000);
+        if (minutes < 60) return `${minutes}m ago`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return `${hours}h ago`;
+        const days = Math.floor(hours / 24);
+        return `${days}d ago`;
+    }
+
     // Generate session ID in S-YYYY-MM-DD-NNN format
     function generateSessionId(sessionNumber) {
         const now = new Date();
@@ -6103,16 +6134,19 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         return `S-${y}-${m}-${d}-${n}`;
     }
 
-    // v8.65.0: Helper to get recent active ideas enriched with metadata
-    function getRecentIdeas(globalIdeas, globalConcepts, apps, maxCount = 5) {
-        const sorted = [...(globalIdeas || [])]
-            .filter(idea => idea.status === 'active')
-            .sort((a, b) => {
-                const dateA = a.lastSessionDate || new Date(a.updatedAt || a.createdAt || 0).getTime();
-                const dateB = b.lastSessionDate || new Date(b.updatedAt || b.createdAt || 0).getTime();
-                return (typeof dateB === 'number' ? dateB : 0) - (typeof dateA === 'number' ? dateA : 0);
-            })
-            .slice(0, maxCount);
+    // v8.68.0: Helper to get recent active ideas enriched with metadata + session state
+    function getRecentIdeas(globalIdeas, globalConcepts, apps, maxCount = 8) {
+        const active = [...(globalIdeas || [])].filter(idea => idea.status === 'active');
+
+        // Two-tier sort: active sessions first, then pending by recency
+        const sortByRecency = (a, b) => {
+            const dateA = a.lastSessionDate || new Date(a.updatedAt || a.createdAt || 0).getTime();
+            const dateB = b.lastSessionDate || new Date(b.updatedAt || b.createdAt || 0).getTime();
+            return (typeof dateB === 'number' ? dateB : 0) - (typeof dateA === 'number' ? dateA : 0);
+        };
+        const withSession = active.filter(i => i.activeSession).sort(sortByRecency);
+        const withoutSession = active.filter(i => !i.activeSession).sort(sortByRecency);
+        const sorted = [...withSession, ...withoutSession].slice(0, maxCount);
 
         return sorted.map(idea => {
             const ideaConcepts = (globalConcepts || []).filter(c => c.ideaOrigin === idea.id);
@@ -6129,7 +6163,15 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                 appName,
                 lastSession,
                 sessionCount: sessionLog.length,
-                phase: idea.phase || computeIdeaPhase(ideaConcepts.filter(c => c.status === 'active'))
+                phase: idea.phase || computeIdeaPhase(ideaConcepts.filter(c => c.status === 'active')),
+                // v8.68.0: Session lifecycle enrichment
+                sessionState: idea.activeSession ? 'active' : 'pending',
+                activeSessionId: idea.activeSession?.sessionId || null,
+                activeSessionCreatedAt: idea.activeSession?.createdAt || null,
+                briefDownloaded: idea.activeSession?.briefDownloaded || false,
+                staleDays: idea.activeSession
+                    ? Math.floor((Date.now() - new Date(idea.activeSession.lastActivityAt || idea.activeSession.createdAt).getTime()) / 86400000)
+                    : null
             };
         });
     }
@@ -10507,6 +10549,30 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         const workCardNavigateApp = (appId) => { if (appId) setView('projects'); };
         const workCardContinue = (idea) => { setWorkCardContinueIdea(idea); };
 
+        // v8.68.0: Upload session results — opens file picker, routes through existing drop pipeline
+        const workCardUploadResults = async (idea) => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.zip,.json,.md';
+            input.multiple = true;
+            input.onchange = (e) => {
+                // Route through existing handleFileDrop which expects e.target.files
+                onFileDrop(e);
+            };
+            input.click();
+        };
+
+        // v8.68.0: Abandon stale session
+        const workCardAbandon = async (idea) => {
+            if (!firebaseUid || !idea.activeSession) return;
+            try {
+                await IdeaManager.abandonSession(firebaseUid, idea.id, idea.activeSessionId);
+                await showAlert(`Session ${idea.activeSessionId} abandoned.`, '🗑️ Abandoned');
+            } catch (e) {
+                await showAlert(`Error: ${e.message}`, '❌ Error');
+            }
+        };
+
         const [selectedFileIds, setSelectedFileIds] = React.useState(new Set());
         const [deployTarget, setDeployTarget] = React.useState({ appId: 'command-center', target: 'test' });
         const [isDeploying, setIsDeploying] = React.useState(false);
@@ -12464,7 +12530,7 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                 {workCardRecentIdeas.length > 0 && (
                     <React.Fragment>
                         <div className="mt-6 mb-2 flex items-center justify-between">
-                            <div className="text-xs font-semibold text-slate-600 uppercase tracking-widest">Recent Work</div>
+                            <div className="text-xs font-semibold text-slate-600 uppercase tracking-widest">Active Work</div>
                             <div className="flex items-center gap-3">
                                 <span onClick={() => setView('ideas')}
                                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-400 cursor-pointer hover:text-slate-200 hover:border-slate-600 transition-colors">
@@ -12482,7 +12548,9 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                                 <IdeaWorkCard key={idea.id} idea={idea}
                                     onNavigateIdea={workCardNavigateIdea}
                                     onNavigateApp={workCardNavigateApp}
-                                    onContinue={workCardContinue} />
+                                    onContinue={workCardContinue}
+                                    onUploadResults={workCardUploadResults}
+                                    onAbandon={workCardAbandon} />
                             ))}
                         </div>
                         {workCardExploreIdea && (
@@ -15872,8 +15940,25 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
         complete:     { stripe: '#22c55e', bg: 'rgba(34,197,94,0.15)',   text: '#22c55e' }
     };
 
-    function IdeaWorkCard({ idea, onNavigateIdea, onNavigateApp, onContinue }) {
+    // v8.68.0: Staleness thresholds for active sessions
+    const STALE_WARNING_DAYS = 7;
+    const STALE_ESCALATED_DAYS = 14;
+
+    // v8.68.0: Dual-state session card (active/pending)
+    function IdeaWorkCard({ idea, onNavigateIdea, onNavigateApp, onContinue, onUploadResults, onAbandon }) {
+        const isActive = idea.sessionState === 'active';
+        const isStale = idea.staleDays >= STALE_WARNING_DAYS;
+        const isEscalated = idea.staleDays >= STALE_ESCALATED_DAYS;
         const phase = PHASE_COLORS[idea.phase] || PHASE_COLORS.exploring;
+
+        const cardBorder = isEscalated
+            ? 'border-amber-600/60 shadow-[0_0_12px_rgba(245,158,11,0.15)]'
+            : isActive
+                ? 'border-green-600/60 shadow-[0_0_12px_rgba(34,197,94,0.15)]'
+                : 'border-slate-700/50';
+
+        const stripeColor = isActive ? '#22c55e' : phase.stripe;
+
         const sessionLabel = idea.lastSession ? `Session ${idea.sessionCount}` : 'No sessions';
         const dateLabel = idea.lastSession
             ? new Date(idea.lastSession.date).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -15884,10 +15969,10 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
         return (
             <div
                 onClick={() => onNavigateIdea(idea.id)}
-                className="flex items-center gap-4 p-4 rounded-xl border border-slate-700/50 bg-slate-800/50 cursor-pointer transition-all hover:border-slate-600 hover:shadow-lg hover:-translate-y-0.5"
+                className={`flex items-center gap-4 p-4 rounded-xl border bg-slate-800/50 cursor-pointer transition-all hover:shadow-lg hover:-translate-y-0.5 ${cardBorder}`}
                 title="Go to Idea"
             >
-                <div className="w-1 h-12 rounded-full flex-shrink-0" style={{ background: phase.stripe }} />
+                <div className="w-1 h-12 rounded-full flex-shrink-0" style={{ background: stripeColor }} />
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                         <span className="text-sm font-semibold text-slate-100 truncate">{idea.name}</span>
@@ -15897,23 +15982,53 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                             title="Go to App"
                         >{idea.appName}</span>
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
                         <span className="px-2 py-0.5 rounded font-semibold uppercase tracking-wider"
                               style={{ background: phase.bg, color: phase.text, fontSize: '10px' }}>{idea.phase}</span>
-                        <span>{sessionLabel}</span>
-                        {dateLabel && (<React.Fragment><span className="opacity-40">·</span><span>{dateLabel}</span></React.Fragment>)}
-                        <span className="opacity-40">·</span>
-                        <span className={`font-mono font-semibold ${idea.openCount > 0 ? 'text-amber-400' : 'text-slate-600'}`}>{idea.openCount} OPENs</span>
+                        {isActive ? (
+                            <React.Fragment>
+                                <span className="px-2 py-0.5 rounded bg-green-900/50 text-green-400 font-semibold uppercase tracking-wider" style={{ fontSize: '10px' }}>active</span>
+                                <span className="opacity-40">·</span>
+                                <span>{idea.activeSessionId}</span>
+                                <span className="opacity-40">·</span>
+                                <span>dispatched {formatTimeAgo(idea.activeSessionCreatedAt)}</span>
+                                {isStale && (
+                                    <span className={`font-medium ${isEscalated ? 'text-red-400' : 'text-amber-400'}`}>
+                                        ⚠️ {idea.staleDays}d
+                                    </span>
+                                )}
+                            </React.Fragment>
+                        ) : (
+                            <React.Fragment>
+                                <span>{sessionLabel}</span>
+                                {dateLabel && (<React.Fragment><span className="opacity-40">·</span><span>{dateLabel}</span></React.Fragment>)}
+                                <span className="opacity-40">·</span>
+                                <span className={`font-mono font-semibold ${idea.openCount > 0 ? 'text-amber-400' : 'text-slate-600'}`}>{idea.openCount} OPENs</span>
+                            </React.Fragment>
+                        )}
                     </div>
                 </div>
+                {isActive && isStale && onAbandon && (
+                    <button
+                        onClick={e => { e.stopPropagation(); if (window.confirm(`Abandon session ${idea.activeSessionId}? This cannot be undone.`)) onAbandon(idea); }}
+                        className="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded transition-colors flex-shrink-0"
+                        title="Abandon this session"
+                    >✕ Abandon</button>
+                )}
                 <button
-                    onClick={e => { e.stopPropagation(); onContinue(idea); }}
+                    onClick={e => { e.stopPropagation(); isActive ? (onUploadResults && onUploadResults(idea)) : onContinue(idea); }}
                     className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold text-white flex-shrink-0 transition-all hover:-translate-y-0.5 hover:shadow-md"
-                    style={{ background: 'linear-gradient(135deg, #667eea, #764ba2)' }}
-                    title="Generate session brief"
+                    style={{ background: isActive
+                        ? (isEscalated ? 'linear-gradient(135deg, #f59e0b, #d97706)' : 'linear-gradient(135deg, #22c55e, #16a34a)')
+                        : 'linear-gradient(135deg, #667eea, #764ba2)' }}
+                    title={isActive ? 'Upload session results' : 'Generate session brief'}
                 >
-                    Continue
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    {isActive ? 'Upload Results' : 'Continue'}
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        {isActive
+                            ? <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                            : <path d="M5 12h14M12 5l7 7-7 7"/>}
+                    </svg>
                 </button>
             </div>
         );
@@ -16983,12 +17098,44 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                                 {sessionHistoryExpanded && (
                                     <div className="mt-2 space-y-1">
                                         {selectedIdea.sessionLog.map((s, i) => (
-                                            <div key={i} className="flex items-center gap-3 text-xs py-1 border-t border-slate-700/50">
-                                                <span className="text-indigo-400 font-mono">{s.sessionId}</span>
-                                                <span className="text-slate-500">{new Date(s.date).toLocaleDateString()}</span>
-                                                <span className="text-slate-400 flex-1">{s.summary}</span>
-                                                <span className="text-green-400">+{s.conceptsCreated}</span>
-                                                <span className="text-amber-400">-{s.conceptsResolved}</span>
+                                            <div key={i} className="py-1.5 border-t border-slate-700/50">
+                                                <div className="flex items-center gap-3 text-xs">
+                                                    <span className="text-indigo-400 font-mono">{s.sessionId}</span>
+                                                    <span className="text-slate-500">{new Date(s.date).toLocaleDateString()}</span>
+                                                    <span className="text-slate-400 flex-1">{s.summary}</span>
+                                                    <span className="text-green-400">+{s.conceptsCreated}</span>
+                                                    <span className="text-amber-400">-{s.conceptsResolved}</span>
+                                                    {s.status === 'abandoned' && (
+                                                        <span className="text-red-400 font-medium">abandoned</span>
+                                                    )}
+                                                </div>
+                                                {s.chain && (
+                                                    <div className="text-xs text-slate-500 mt-1 ml-0.5">
+                                                        {s.chain.linkCount} link{s.chain.linkCount !== 1 ? 's' : ''} · {s.chain.totalConceptBlocks || 0} concept blocks · {s.chain.totalElapsedMinutes || 0}min
+                                                    </div>
+                                                )}
+                                                {s.debriefSummary && (
+                                                    <details className="mt-1.5">
+                                                        <summary className="text-xs text-indigo-400 cursor-pointer hover:text-indigo-300">
+                                                            View debrief summary
+                                                        </summary>
+                                                        <p className="text-xs text-slate-400 mt-1 pl-3 border-l-2 border-slate-700 whitespace-pre-wrap">
+                                                            {s.debriefSummary}
+                                                        </p>
+                                                    </details>
+                                                )}
+                                                {s.nextSession && (
+                                                    <div className="text-xs text-slate-500 mt-1 italic">
+                                                        Next: {s.nextSession}
+                                                    </div>
+                                                )}
+                                                {s.ideaPhaseAtStart && s.ideaPhaseAtEnd &&
+                                                 s.ideaPhaseAtStart !== s.ideaPhaseAtEnd && (
+                                                    <div className="text-xs mt-1">
+                                                        Phase: <span className="text-slate-400">{s.ideaPhaseAtStart}</span>
+                                                        {' → '}<span className="text-green-400">{s.ideaPhaseAtEnd}</span>
+                                                    </div>
+                                                )}
                                             </div>
                                         ))}
                                     </div>
