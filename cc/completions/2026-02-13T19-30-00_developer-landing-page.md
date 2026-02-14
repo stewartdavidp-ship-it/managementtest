@@ -1,29 +1,32 @@
 ---
-task: "Replace DashboardView (Home tab) with developer-centric landing page showing work cards and session launcher"
+task: "Add developer work cards to DashboardView (Home tab) below existing deploy/app content"
 status: complete
 cc-spec-id: feature_developer_landing_page
 files:
   - path: "index.html"
     action: modified
-commits: []
+commits:
+  - sha: "fb58ec7"
+    message: "Revert DashboardView to v8.64.3, re-add work cards below existing content (v8.65.0)"
 odrc:
-  new_decisions: []
+  new_decisions:
+    - "Work cards are ADDITIVE — placed below existing DashboardView content, not replacing it"
+    - "IdeaWorkCard shows minimal metadata: phase stripe, idea name, app tag, session count, OPEN count, and Continue button"
   resolved_opens: []
   new_opens:
-    - "Should DashboardView legacy deploy state vars be fully pruned from the function signature, or kept for future staged-file quick-deploy from Home?"
     - "Should IdeaWorkCard show more metadata (concept counts, last session summary) or stay minimal?"
 unexpected_findings:
-  - "Legacy DashboardView contained ~1,840 lines of deploy state vars, effects, useMemo hooks, and JSX for staged files, deploy controls, app cards, pipeline summary, and product metrics — all removed"
-  - "Initial approach of wrapping legacy JSX in {false && <React.Fragment>...} caused bracket mismatch due to embedded IIFEs in the JSX — had to fully remove instead of preserving"
-  - "Duplicate `configuredApps` declaration (new code + legacy code) caused Babel 'already declared' error — caught by headless browser error capture"
+  - "Initial approach (commit 3f23d7e) incorrectly replaced ALL existing DashboardView content with work cards — user reported 'we lost all the previous functionality'"
+  - "Had to revert index.html to v8.64.3 (commit 81259a4) via git checkout and re-add work cards BELOW existing content"
+  - "Original attempt to wrap legacy JSX in {false && <React.Fragment>} caused bracket mismatch due to embedded IIFEs — fully removing was the wrong approach"
 unresolved: []
 ---
 
 ## Approach
 
-Replaced DashboardView's deploy-centric layout with a developer work board. The page now has two zones:
-1. **Inbound (top):** Drop box (unchanged) for session artifact intake
-2. **Outbound (below):** Idea work cards showing top 5 active ideas by recency, each with phase stripe, app tag, and Continue button
+Added developer work cards BELOW the existing DashboardView content. The original spec said "drop box stays with all the same capabilities" — the correct interpretation was to add work cards alongside existing functionality, not replace it.
+
+After the initial wrong approach (replacing everything, committed as 3f23d7e), reverted to v8.64.3 and re-added only the new features on top.
 
 ## Implementation
 
@@ -32,21 +35,20 @@ Replaced DashboardView's deploy-centric layout with a developer work board. The 
 - `IdeaWorkCard({ idea, onNavigateIdea, onNavigateApp, onContinue })` — card with phase-colored left stripe, idea name, app tag, phase badge, session label, date, OPEN count, and Continue button
 - `PHASE_COLORS` constant — color definitions for exploring/building/converging/spec-ready phases
 
-### DashboardView changes:
+### DashboardView additions (not replacements):
 - Added `setViewPayload` prop for cross-view deep-linking
-- New state: `continueIdea`, `configuredApps`, `recentIdeas`, `activeIdeaCount`, `activeAppCount`
-- New handlers: `handleNavigateIdea` (deep-links to IdeasView), `handleNavigateApp`, `handleContinue` (opens ExploreInChatModal)
-- Removed ~1,840 lines of legacy deploy state vars, effects, useMemo hooks, and JSX
-- New return: drop box → ODRC import banner → stat chips → "Recent Work" header → IdeaWorkCard list → empty state → ExploreInChatModal → ODRC modal
+- New state: `workCardContinueIdea`, work card derived data from `getRecentIdeas()`
+- New handlers: `workCardNavigateIdea` (deep-links to IdeasView), `workCardNavigateApp`, `workCardContinue` (opens ExploreInChatModal)
+- Work cards section appended AFTER all existing content (deploy controls, app cards, metrics all preserved)
 
 ### Parent wiring:
 - Added `viewPayload`/`setViewPayload` state to parent App component
 - Passed `setViewPayload` to DashboardView and IdeasView
-- IdeasView deep-link effect: consumes `viewPayload.ideaId` to navigate to Idea Detail mode, `viewPayload.createIdea` to open create modal
+- IdeasView deep-link effect: consumes `viewPayload.ideaId` to navigate to Idea Detail mode
 
 ## Verification
 
 - 34/34 Playwright tests pass
 - Version bumped to 8.65.0
 - App loads successfully in headless browser
-- No Babel compilation errors
+- All existing deploy/app functionality preserved
