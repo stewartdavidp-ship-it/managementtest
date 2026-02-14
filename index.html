@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.65.1">
+    <meta name="version" content="8.65.2">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2996,6 +2996,37 @@
     // IDEATION BRIEF GENERATOR (v8.61.0 — Idea-to-Chat Pipeline)
     // =========================================================================
 
+    // v8.65.2: Lens/Mode constants for skills-based brief generation
+    const LENS_OPTIONS = {
+        technical: 'Technical — feasibility, architecture, dependencies, implementation risk',
+        economics: 'Economics — cost structure, pricing, ROI, resource requirements',
+        competitive: 'Competitive — differentiation, market positioning, alternatives',
+        customer: 'Voice of Customer — problem-solution fit, friction, adoption',
+        operational: 'Operational — maintenance, scaling, support'
+    };
+
+    const MODE_OPTIONS = {
+        exploration: 'Exploration — open discovery, surface OPENs, make early Decisions',
+        'stress-test': 'Stress Test — challenge mode, find gaps, validate Decisions',
+        spec: 'Spec — convergence, resolve OPENs, establish Rules and Constraints',
+        review: 'Review — evaluate completeness and readiness'
+    };
+
+    const LENS_DESCRIPTIONS = {
+        technical: 'Probes feasibility, architecture, and implementation risk',
+        economics: 'Probes cost structure, pricing, and economic viability',
+        competitive: 'Probes differentiation, market position, and alternatives',
+        customer: 'Probes user needs, problem-solution fit, and adoption friction',
+        operational: 'Probes maintenance, scaling, and operational support'
+    };
+
+    const MODE_DESCRIPTIONS = {
+        exploration: 'Open discovery focused on surfacing OPENs and early Decisions',
+        'stress-test': 'Challenge mode focused on finding gaps and validating Decisions',
+        spec: 'Convergence focused on resolving OPENs and locking down Rules/Constraints',
+        review: 'Evaluative mode confirming completeness and build-readiness'
+    };
+
     const IdeationBriefGenerator = {
         // v8.62.0 B1: Determine session type from idea state
         getSessionType(idea, concepts) {
@@ -3006,30 +3037,41 @@
             return 'exploration';
         },
 
+        // v8.65.2 B2: Session config with lens/mode
+        getSessionConfig(idea, concepts, selectedLens, selectedMode) {
+            const sessionType = this.getSessionType(idea, concepts);
+            return {
+                sessionType,
+                lens: selectedLens || null,
+                mode: selectedMode || this.getDefaultMode(sessionType)
+            };
+        },
+
+        getDefaultMode(sessionType) {
+            switch (sessionType) {
+                case 'spec': return 'spec';
+                case 'claude-md': return null;
+                default: return 'exploration';
+            }
+        },
+
         // v8.62.0 B1: Three-type system prompt — exploration, spec, claude-md
+        // v8.65.2 B3: Stripped embedded instructions — skills handle ODRC framework, output format, session protocol
         getSystemPrompt(sessionType) {
             switch (sessionType) {
                 case 'spec':
-                    return `You are generating a session brief for a SPECIFICATION session.
-The idea has reached spec-ready status. Generate a brief that instructs Chat to:
-1. Review all DECISIONs, RULEs, and CONSTRAINTs
-2. Resolve any remaining OPENs
-3. Produce a formal specification document with:
-   - Task summary
-   - Detailed implementation sections
-   - Architecture constraints
-   - File structure
-   - Any phase splitting recommendations
-4. Include ODRC Updates section at the end
+                    return `You are generating a lean session brief for a SPECIFICATION session.
+The idea has reached spec-ready status. The developer has skills loaded that handle ODRC framework and session protocol.
 
 Generate a markdown document with these sections:
-- Session header (idea name, app, session number, current version)
-- "Spec Goal" — what the specification should cover
-- Idea Summary — what this idea is about
-- Current ODRC State — all active concepts grouped by type
-- Expected Output Format (ODRC Updates with header metadata)
+- Session header (idea name, app, session number, phase: spec-ready)
+- Skills Directive — list the specific skills to read (provided in the user message)
+- Spec Goal — what the specification should cover
+- Idea Summary
+- Current ODRC State — all active concepts grouped by type, highlighting any remaining OPENs that must be resolved
+- Session Metadata — idea slug, IdeaId, app ID, session number
 
-The spec should be comprehensive enough that a CLAUDE.md can be generated from it.`;
+Do NOT embed ODRC output format definitions — skills handle that.`;
 
                 case 'claude-md':
                     return `You are generating a session brief for a CLAUDE.md GENERATION session.
@@ -3038,7 +3080,7 @@ A specification already exists for this idea. Generate a brief that instructs Ch
 2. Produce a CLAUDE.md file following the LOCKED TEMPLATE below
 3. Include all implementation details from the spec
 4. Validate line references against the codebase (if included)
-5. Include ODRC Updates section at the end
+5. Include ODRC Updates section at the end (format defined in cc-odrc-framework skill)
 
 LOCKED CLAUDE.md TEMPLATE — Chat MUST follow this structure:
 \`\`\`
@@ -3100,54 +3142,49 @@ Completion file format:
 
 Generate a markdown document with these sections:
 - Session header (idea name, app, session number)
-- "CLAUDE.md Generation Goal"
+- Skills Directive — list skills to read
+- CLAUDE.md Generation Goal
 - Idea Summary
 - Current ODRC State
-- Expected Output Format (the locked CLAUDE.md template above + ODRC Updates)`;
+- Session Metadata`;
 
                 default: // exploration
-                    return `You are generating a session brief for a structured ideation conversation.
-The brief will be uploaded to Claude Chat along with a standardized prompt.
-Generate a markdown document with these sections:
-- Session header (idea name, app, session number, current version)
-- "What are you looking to get out of today's session?" — ask the developer to state their goal
+                    return `You are generating a lean session brief for a Claude Chat ideation session.
+The developer has skills loaded in claude.ai that handle ODRC framework, session structure, output format, and session protocol. The brief should NOT repeat ODRC definitions, output templates, or behavioral instructions — skills handle all of that.
+
+Generate a markdown document with ONLY these sections:
+- Session header (idea name, app, session number, phase)
+- Skills Directive — list the specific skills to read (provided in the user message)
+- Session Goal — "What are you looking to get out of today's session?"
 - Idea Summary — what this idea is about
 - Prior Session Summary — if sessions exist, summarize the most recent
 - Current ODRC State — all active concepts grouped by type (OPEN, DECISION, RULE, CONSTRAINT)
-- Expected Output Format — provide the COMPLETE output specification including:
-  (a) Header block with all seven metadata lines: title with idea display name, date (YYYY-MM-DD), session number with short description, idea slug, IdeaId (the Firebase key from the brief header), app ID, and a one-line context summary of what the session should accomplish
-  (b) ODRC Updates section showing all five line types with examples that demonstrate substantive descriptions with rationale:
-      - RESOLVE OPEN: "original open text" → resolution with rationale
-      - NEW DECISION: "what was decided AND why — enough context to understand the decision standalone"
-      - NEW OPEN: "specific actionable question — not vague"
-      - NEW RULE: "behavioral principle governing future work"
-      - NEW CONSTRAINT: "hard boundary — technology, scope, policy"
-  (c) Session Notes section with three subsections: What Was Accomplished (narrative paragraph), Key Design Principles Established (bulleted themes that emerged), Session Status (concept counts by type, phase assessment, what the next session should focus on)
-  Show the complete format as a copyable template the developer can reference during the session.
-- Supporting Documents — note what else is in the zip
+- Session Metadata — idea slug, IdeaId, app ID, session number (needed for ODRC output routing)
 
-Frame everything in ODRC terms. The brief should make it easy for Chat to pick up context and produce structured ODRC output at session end.`;
+Keep the brief focused on CONTEXT, not INSTRUCTIONS. The skills provide all instructions.`;
             }
         },
 
         // Main entry point — generates the session brief markdown
-        async generate(idea, app, concepts, globalConcepts) {
+        // v8.65.2 B4: Accept lens/mode for skills-based briefs
+        async generate(idea, app, concepts, globalConcepts, lens = null, mode = null) {
             const ideaContext = this.buildIdeaContext(idea, concepts);
             const appContext = this.buildAppContext(app, globalConcepts);
             const odrcState = ODRCSummaryGenerator.generateScoped(concepts, [idea], null);
             const sessionType = this.getSessionType(idea, concepts);
+            const effectiveMode = mode || this.getDefaultMode(sessionType);
 
             try {
                 const brief = await ClaudeAPIService.call({
                     model: 'claude-sonnet-4-20250514',
                     system: this.getSystemPrompt(sessionType),
-                    userMessage: this.buildUserMessage(ideaContext, appContext, odrcState),
+                    userMessage: this.buildUserMessage(ideaContext, appContext, odrcState, lens, effectiveMode),
                     maxTokens: 4096
                 });
                 return brief;
             } catch (e) {
                 console.warn('[CC] IdeationBriefGenerator: AI generation failed, using template fallback:', e.message);
-                return this.buildTemplateBrief(idea, app, concepts, ideaContext, appContext, odrcState, sessionType);
+                return this.buildTemplateBrief(idea, app, concepts, ideaContext, appContext, odrcState, sessionType, lens, effectiveMode);
             }
         },
 
@@ -3188,7 +3225,8 @@ Frame everything in ODRC terms. The brief should make it easy for Chat to pick u
             };
         },
 
-        buildUserMessage(ideaContext, appContext, odrcState) {
+        // v8.65.2 B5: Include lens/mode and skills directive in user message
+        buildUserMessage(ideaContext, appContext, odrcState, lens = null, mode = null) {
             const sessionNum = ideaContext.sessionCount + 1;
             let msg = `Generate a session brief for:\n\n`;
             msg += `**Idea:** ${ideaContext.name}\n`;
@@ -3196,6 +3234,18 @@ Frame everything in ODRC terms. The brief should make it easy for Chat to pick u
             msg += `**Session Number:** ${sessionNum}\n`;
             msg += `**Idea Slug:** ${ideaContext.slug}\n`;
             msg += `**Phase:** ${ideaContext.phase}\n\n`;
+
+            // Skills directive for the AI to embed in the brief
+            msg += `**Skills Directive to embed in the brief:**\n`;
+            msg += `- cc-odrc-framework\n- cc-session-structure\n- cc-artifact-manifest\n- cc-post-session-package\n`;
+            if (lens && LENS_DESCRIPTIONS[lens]) {
+                msg += `- cc-lens-${lens} — ${LENS_DESCRIPTIONS[lens]}\n`;
+            }
+            if (mode && MODE_DESCRIPTIONS[mode]) {
+                msg += `- cc-mode-${mode} — ${MODE_DESCRIPTIONS[mode]}\n`;
+            }
+            msg += `\n`;
+
             msg += `**Idea Description:**\n${ideaContext.description}\n\n`;
 
             if (ideaContext.latestSession) {
@@ -3212,7 +3262,6 @@ Frame everything in ODRC terms. The brief should make it easy for Chat to pick u
                     msg += `- ${s.sessionId} (${new Date(s.date).toLocaleDateString()}): ${s.summary}\n`;
                 });
                 msg += `\n`;
-                // Flag long-standing OPENs
                 msg += `Note: Flag any OPENs persisting across 2+ sessions as "long-standing".\n\n`;
             }
 
@@ -3229,7 +3278,8 @@ Frame everything in ODRC terms. The brief should make it easy for Chat to pick u
         // Template fallback when AI is unavailable
         // v8.61.1: Added phase param for spec-ready framing
         // v8.62.0 B1: Template handles all three session types
-        buildTemplateBrief(idea, app, concepts, ideaContext, appContext, odrcState, sessionType) {
+        // v8.65.2 B6: Skills Directive replaces Expected Output Format
+        buildTemplateBrief(idea, app, concepts, ideaContext, appContext, odrcState, sessionType, lens = null, mode = null) {
             const sessionNum = ideaContext.sessionCount + 1;
             const slug = ideaContext.slug;
             const appId = app?.id || 'unknown';
@@ -3272,32 +3322,28 @@ Frame everything in ODRC terms. The brief should make it easy for Chat to pick u
             // v8.62.0 A3: Strip generic scope header from ODRC summary
             const odrcStateClean = odrcState.replace(/^# ODRC State Summary\nScope:.*\n/m, '');
             brief += odrcStateClean + '\n\n';
-            brief += `## Expected Output Format\n\n`;
-            brief += `At the end of this session, produce structured ODRC updates using the format below.\n`;
-            brief += `Each ODRC line should include substantive rationale — not just a label.\n\n`;
-            brief += `\`\`\`\n`;
-            brief += `# ODRC Updates — ${ideaContext.name}\n`;
-            brief += `# Date: ${new Date().toISOString().slice(0, 10)}\n`;
-            brief += `# Session: S-${new Date().toISOString().slice(0, 10).replace(/-/g, '-')}-${String(sessionNum).padStart(3, '0')} (describe this session)\n`;
-            brief += `# Idea: ${slug}\n`;
-            brief += `# IdeaId: ${idea.id}\n`; // v8.64.0 A4: Firebase key for unambiguous routing
-            brief += `# App: ${appId}\n`;
-            brief += `# Context: (one-line summary of what this session accomplished)\n\n`;
-            brief += `- RESOLVE OPEN: "original open text" → resolution with rationale\n`;
-            brief += `- NEW DECISION: "what was decided AND why — enough context to understand standalone"\n`;
-            brief += `- NEW OPEN: "specific actionable question — not vague"\n`;
-            brief += `- NEW RULE: "behavioral principle governing future work"\n`;
-            brief += `- NEW CONSTRAINT: "hard boundary — technology, scope, policy"\n\n`;
-            brief += `## Session Notes\n\n`;
-            brief += `### What Was Accomplished\n`;
-            brief += `(Narrative paragraph summarizing the session)\n\n`;
-            brief += `### Key Design Principles Established\n`;
-            brief += `- (Bulleted themes that emerged during the session)\n\n`;
-            brief += `### Session Status\n`;
-            brief += `- Concepts: X OPENs, X DECISIONs, X RULEs, X CONSTRAINTs\n`;
-            brief += `- Phase: (current assessment)\n`;
-            brief += `- Next session: (what to focus on next)\n`;
-            brief += `\`\`\`\n\n`;
+            // v8.65.2 B6: Skills Directive replaces Expected Output Format
+            brief += `## Skills Directive\n\n`;
+            brief += `Read these skills before starting the session:\n`;
+            brief += `- **cc-odrc-framework** — ODRC thinking model and output format\n`;
+            brief += `- **cc-session-structure** — Session opening, pacing, and closing protocol\n`;
+            brief += `- **cc-artifact-manifest** — Track all files created during the session\n`;
+            brief += `- **cc-post-session-package** — Required output deliverables\n`;
+            if (lens && LENS_DESCRIPTIONS[lens]) {
+                brief += `- **cc-lens-${lens}** — ${LENS_DESCRIPTIONS[lens]}\n`;
+            }
+            if (mode && MODE_DESCRIPTIONS[mode]) {
+                brief += `- **cc-mode-${mode}** — ${MODE_DESCRIPTIONS[mode]}\n`;
+            }
+            brief += `\n`;
+
+            brief += `## Session Metadata\n\n`;
+            brief += `Use this metadata in the ODRC Updates header (format defined in cc-odrc-framework skill):\n`;
+            brief += `- Idea: ${slug}\n`;
+            brief += `- IdeaId: ${idea.id}\n`;
+            brief += `- App: ${appId}\n`;
+            brief += `- Session: S-${new Date().toISOString().slice(0, 10)}-${String(sessionNum).padStart(3, '0')}\n\n`;
+
             // v8.62.0 A3: Only include Supporting Documents if zip will be the output method
             if (ideaContext.sessionCount > 0 || brief.length >= 8000) {
                 brief += `## Supporting Documents\n`;
@@ -3308,18 +3354,12 @@ Frame everything in ODRC terms. The brief should make it easy for Chat to pick u
         },
 
         // v8.62.0 B1: Session-type-aware handshake prompt
-        getHandshakePrompt(ideaName, sessionNumber, appName, sessionType) {
-            const typeLabel = sessionType === 'spec' ? 'Specification'
-                : sessionType === 'claude-md' ? 'CLAUDE.md Generation'
-                : 'Exploration';
-
-            return `Please review the attached session brief and supporting documents for ${ideaName} (Session ${sessionNumber}, App: ${appName}).
-
-This is a ${typeLabel} session.
-
-Confirm you've reviewed the materials, then ask me what I want to accomplish in this session.
-
-Frame all work using the ODRC model (OPENs, Decisions, Rules, Constraints). At the end of the session, produce a structured ODRC Updates section using the format defined in the brief.`;
+        // v8.65.2 B7: Reference skills instead of embedding instructions
+        getHandshakePrompt(ideaName, sessionNumber, appName, sessionType, lens, mode) {
+            let prompt = `Please review the attached session brief for ${ideaName} (Session ${sessionNumber}, App: ${appName}).\n\n`;
+            prompt += `Read the skills listed in the Skills Directive section of the brief before proceeding.\n\n`;
+            prompt += `Confirm you've reviewed the brief and skills, then ask me what I want to accomplish in this session.`;
+            return prompt;
         }
     };
 
@@ -15571,17 +15611,26 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
         const [error, setError] = React.useState(null);
         const [includeCodebase, setIncludeCodebase] = React.useState(phase === 'converging' || phase === 'spec-ready');
 
+        // v8.65.2 B8: Lens/Mode state for skills-based briefs
+        const sessionType = IdeationBriefGenerator.getSessionType(idea, concepts);
+        const [selectedLens, setSelectedLens] = React.useState(null);
+        const [selectedMode, setSelectedMode] = React.useState(
+            IdeationBriefGenerator.getDefaultMode(sessionType)
+        );
+
         const sizeThreshold = 8000;
         const isLargeBrief = briefText && briefText.length >= sizeThreshold;
 
-        // Auto-generate brief on mount
+        // Auto-generate brief on mount and when lens/mode change
         React.useEffect(() => {
             let cancelled = false;
             (async () => {
                 setGenerating(true);
                 setError(null);
                 try {
-                    const result = await IdeationBriefGenerator.generate(idea, app, concepts, globalConcepts);
+                    const result = await IdeationBriefGenerator.generate(
+                        idea, app, concepts, globalConcepts, selectedLens, selectedMode
+                    );
                     if (!cancelled) setBriefText(result);
                 } catch (e) {
                     if (!cancelled) setError(e.message);
@@ -15589,10 +15638,11 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 if (!cancelled) setGenerating(false);
             })();
             return () => { cancelled = true; };
-        }, [idea.id]);
+        }, [idea.id, selectedLens, selectedMode]);
 
-        const sessionType = IdeationBriefGenerator.getSessionType(idea, concepts);
-        const handshakePrompt = IdeationBriefGenerator.getHandshakePrompt(idea.name, sessionNum, app?.name || 'Unknown', sessionType);
+        const handshakePrompt = IdeationBriefGenerator.getHandshakePrompt(
+            idea.name, sessionNum, app?.name || 'Unknown', sessionType, selectedLens, selectedMode
+        );
 
         const copyPrompt = async () => {
             try {
@@ -15674,6 +15724,39 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                             '🗣️ Explore in Chat'
                         } — {idea.name.substring(0, 50)}{idea.name.length > 50 ? '…' : ''} (Session {sessionNum})</h2>
                         <button onClick={onClose} className="text-slate-400 hover:text-white text-xl">✕</button>
+                    </div>
+                    {/* v8.65.2 B8: Lens/Mode config panel */}
+                    <div className="p-4 border-b border-slate-700 space-y-3">
+                        <div className="flex gap-4">
+                            <div className="flex-1">
+                                <label className="text-xs text-slate-400 mb-1 block">Lens (what to examine)</label>
+                                <select value={selectedLens || ''} onChange={e => setSelectedLens(e.target.value || null)}
+                                    className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm text-white">
+                                    <option value="">General (no specific lens)</option>
+                                    {Object.entries(LENS_OPTIONS).map(([key, desc]) =>
+                                        <option key={key} value={key}>{desc}</option>
+                                    )}
+                                </select>
+                            </div>
+                            <div className="flex-1">
+                                <label className="text-xs text-slate-400 mb-1 block">Mode (how to examine)</label>
+                                <select value={selectedMode || ''} onChange={e => setSelectedMode(e.target.value || null)}
+                                    className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm text-white">
+                                    <option value="">Default</option>
+                                    {Object.entries(MODE_OPTIONS).map(([key, desc]) =>
+                                        <option key={key} value={key}>{desc}</option>
+                                    )}
+                                </select>
+                            </div>
+                        </div>
+                        {(selectedLens || selectedMode) && (
+                            <div className="text-xs text-slate-500">
+                                Brief will include Skills Directive for: {[
+                                    selectedLens && `cc-lens-${selectedLens}`,
+                                    selectedMode && `cc-mode-${selectedMode}`
+                                ].filter(Boolean).join(', ')}
+                            </div>
+                        )}
                     </div>
                     <div className="flex-1 overflow-y-auto p-4">
                         {generating && (
