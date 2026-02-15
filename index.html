@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.69.6">
+    <meta name="version" content="8.69.7">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -5560,6 +5560,32 @@ If vague, suggest stepping back to refine the idea definition before deep explor
             return newCommit;
         }
 
+        // v8.69.7: Check if a repository exists
+        async repoExists(owner, repoName) {
+            try {
+                await this.request(`/repos/${owner}/${repoName}`);
+                return true;
+            } catch (e) {
+                if (e.message && e.message.includes('404')) return false;
+                // For non-404 errors (rate limit, auth), re-throw
+                throw e;
+            }
+        }
+
+        // v8.69.7: Create a new repository
+        async createRepo(repoName, description = '', isPrivate = false) {
+            const result = await this.request('/user/repos', {
+                method: 'POST',
+                body: JSON.stringify({
+                    name: repoName,
+                    description,
+                    private: isPrivate,
+                    auto_init: true
+                })
+            });
+            return { fullName: result.full_name, htmlUrl: result.html_url, ...result };
+        }
+
         // Phase 3: List recent commits for orphan detection
         async listRecentCommits(repo, perPage = 30) {
             const [owner, repoName] = repo.split('/');
@@ -10003,6 +10029,20 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                         />
                     )}
                     
+                    {/* v8.69.7: Quick Create App Modal — from unassigned idea badge */}
+                    {modal?.type === 'quick-create-app' && (
+                        <QuickCreateAppModal
+                            idea={modal.data.idea}
+                            github={github}
+                            githubOwner={availableRepos[0]?.owner || 'stewartdavidp-ship-it'}
+                            config={config}
+                            updateConfig={handleConfigChange}
+                            firebaseUid={firebaseUid}
+                            onClose={() => setModal(null)}
+                            showAlert={showAlert}
+                        />
+                    )}
+
                     {/* SESSION_RETURN.json Auto-Review Modal (Phase B) */}
                     {pendingSessionReturn && (
                         <AutoReviewModal
@@ -10737,6 +10777,205 @@ If vague, suggest stepping back to refine the idea definition before deep explor
     }
 
     // =========================================================================
+    // v8.69.7: QUICK CREATE APP MODAL — from unassigned idea badge
+    // =========================================================================
+
+    function QuickCreateAppModal({ idea, github, githubOwner, config, updateConfig, firebaseUid, onClose, showAlert }) {
+        const [appName, setAppName] = React.useState(idea?.name || '');
+        const [description, setDescription] = React.useState(idea?.description || '');
+        const [structure, setStructure] = React.useState('prod-only');
+        const [creating, setCreating] = React.useState(false);
+        const [status, setStatus] = React.useState('');
+
+        const slug = appName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        const prodRepoName = slug;
+        const testRepoName = `${slug}-test`;
+
+        const canCreate = appName.trim().length > 0 && slug.length > 0 && github && githubOwner;
+
+        const handleCreate = async () => {
+            if (!canCreate || creating) return;
+            setCreating(true);
+            try {
+                // 1. Check if prod repo exists
+                setStatus('Checking repositories...');
+                const prodExists = await github.repoExists(githubOwner, prodRepoName);
+                if (prodExists) {
+                    await showAlert(`Repository "${githubOwner}/${prodRepoName}" already exists. Choose a different name.`, 'Repository Exists');
+                    setCreating(false);
+                    setStatus('');
+                    return;
+                }
+                if (structure === 'test-prod') {
+                    const testExists = await github.repoExists(githubOwner, testRepoName);
+                    if (testExists) {
+                        await showAlert(`Repository "${githubOwner}/${testRepoName}" already exists. Choose a different name.`, 'Repository Exists');
+                        setCreating(false);
+                        setStatus('');
+                        return;
+                    }
+                }
+
+                // 2. Create prod repo
+                setStatus('Creating production repository...');
+                const prodResult = await github.createRepo(prodRepoName, `${appName} - production`, false);
+                const prodFullName = prodResult.fullName;
+
+                // 3. Wait for GitHub to initialize, then enable Pages
+                setStatus('Enabling GitHub Pages...');
+                await new Promise(r => setTimeout(r, 2000));
+                try { await github.enablePages(prodFullName); } catch (e) { console.log('Pages may need manual enabling:', e); }
+
+                // 4. Create test repo if test-prod structure
+                let testFullName = '';
+                if (structure === 'test-prod') {
+                    setStatus('Creating test repository...');
+                    const testResult = await github.createRepo(testRepoName, `${appName} - test environment`, false);
+                    testFullName = testResult.fullName;
+                    await new Promise(r => setTimeout(r, 2000));
+                    try { await github.enablePages(testFullName); } catch (e) { console.log('Test Pages may need manual enabling:', e); }
+                }
+
+                // 5. Create app config
+                setStatus('Creating app configuration...');
+                const newConfig = ConfigManager.addApp({ ...config, apps: { ...config.apps } }, {
+                    name: appName,
+                    id: slug,
+                    icon: '🚀',
+                    targetPath: 'index.html'
+                });
+                // Assign repos
+                newConfig.apps[slug].repos = {
+                    ...newConfig.apps[slug].repos,
+                    prod: prodFullName,
+                    ...(structure === 'test-prod' ? { test: testFullName } : {})
+                };
+                newConfig.apps[slug].description = description;
+                updateConfig(newConfig);
+
+                // 6. Link idea to new app
+                if (idea && firebaseUid) {
+                    setStatus('Linking idea to app...');
+                    await IdeaManager.update(firebaseUid, idea.id, { appId: slug });
+                }
+
+                setStatus('Done!');
+                await showAlert(
+                    `App "${appName}" created!\n\n` +
+                    `Prod: ${prodFullName}\n` +
+                    (testFullName ? `Test: ${testFullName}\n` : '') +
+                    `\nIdea "${idea?.name}" has been linked.`,
+                    '✅ App Created'
+                );
+                onClose();
+            } catch (e) {
+                console.error('QuickCreateApp error:', e);
+                await showAlert(`Error: ${e.message}`, '❌ Creation Failed');
+                setCreating(false);
+                setStatus('');
+            }
+        };
+
+        return (
+            <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={onClose}>
+                <div className="bg-slate-800 rounded-xl border border-slate-700 p-6 w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center gap-3 mb-5">
+                        <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg">🚀</div>
+                        <div>
+                            <h2 className="text-lg font-bold text-white">Quick Create App</h2>
+                            <p className="text-xs text-slate-400">Create app & repo for "{idea?.name}"</p>
+                        </div>
+                    </div>
+
+                    <div className="space-y-4">
+                        {/* App Name */}
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-1">App Name</label>
+                            <input
+                                type="text" value={appName} onChange={e => setAppName(e.target.value)}
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:border-indigo-500"
+                                placeholder="My New App"
+                                disabled={creating}
+                            />
+                            {slug && <p className="text-xs text-slate-500 mt-1">ID: <code className="text-indigo-400">{slug}</code></p>}
+                        </div>
+
+                        {/* Description */}
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-1">Description (optional)</label>
+                            <input
+                                type="text" value={description} onChange={e => setDescription(e.target.value)}
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:border-indigo-500"
+                                placeholder="Brief app description"
+                                disabled={creating}
+                            />
+                        </div>
+
+                        {/* Deploy Structure */}
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">Deploy Structure</label>
+                            <div className="space-y-2">
+                                <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${structure === 'prod-only' ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-600 hover:border-slate-500'}`}>
+                                    <input type="radio" name="structure" value="prod-only" checked={structure === 'prod-only'} onChange={() => setStructure('prod-only')} className="mt-1" disabled={creating} />
+                                    <div>
+                                        <div className="text-sm font-medium text-white">Production Only</div>
+                                        <div className="text-xs text-slate-400">Single repo — deploy directly to production</div>
+                                    </div>
+                                </label>
+                                <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${structure === 'test-prod' ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-600 hover:border-slate-500'}`}>
+                                    <input type="radio" name="structure" value="test-prod" checked={structure === 'test-prod'} onChange={() => setStructure('test-prod')} className="mt-1" disabled={creating} />
+                                    <div>
+                                        <div className="text-sm font-medium text-white">Test + Production</div>
+                                        <div className="text-xs text-slate-400">Two repos — test first, then promote to prod</div>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        {/* Repo Preview */}
+                        <div className="p-3 rounded-lg bg-slate-900/50 border border-slate-700">
+                            <div className="text-xs font-medium text-slate-400 mb-2">Repositories to create:</div>
+                            <div className="space-y-1">
+                                <div className="flex items-center gap-2 text-sm">
+                                    <span className="text-green-400">●</span>
+                                    <code className="text-indigo-400">{githubOwner}/{prodRepoName || '...'}</code>
+                                    <span className="text-xs text-slate-500">(prod)</span>
+                                </div>
+                                {structure === 'test-prod' && (
+                                    <div className="flex items-center gap-2 text-sm">
+                                        <span className="text-yellow-400">●</span>
+                                        <code className="text-yellow-400">{githubOwner}/{testRepoName}</code>
+                                        <span className="text-xs text-slate-500">(test)</span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Status */}
+                        {status && (
+                            <div className="flex items-center gap-2 text-sm text-indigo-400">
+                                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" /></svg>
+                                {status}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex justify-end gap-3 mt-6">
+                        <button onClick={onClose} disabled={creating}
+                            className="px-4 py-2 text-sm text-slate-400 hover:text-white transition-colors">Cancel</button>
+                        <button onClick={handleCreate} disabled={!canCreate || creating}
+                            className="px-5 py-2 rounded-lg text-sm font-semibold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                            style={{ background: canCreate && !creating ? 'linear-gradient(135deg, #667eea, #764ba2)' : '#334155' }}>
+                            {creating ? 'Creating...' : 'Create App & Link Idea'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // =========================================================================
     // DASHBOARD VIEW
     // =========================================================================
     
@@ -10753,7 +10992,10 @@ If vague, suggest stepping back to refine the idea definition before deep explor
             return (globalIdeas || []).find(i => i.id === workCardContinueIdea.id) || workCardContinueIdea;
         }, [workCardContinueIdea, globalIdeas]);
         const workCardNavigateIdea = (ideaId) => { if (setViewPayload) setViewPayload({ ideaId }); setView('ideas'); };
-        const workCardNavigateApp = (appId) => { if (appId) setView('projects'); };
+        const workCardNavigateApp = (appId, idea) => {
+            if (appId) { setView('projects'); }
+            else if (idea) { setModal({ type: 'quick-create-app', data: { idea } }); }
+        };
         const workCardContinue = (idea) => { setWorkCardContinueIdea(idea); };
 
         // v8.68.0: Upload session results — opens file picker, routes through existing drop pipeline
@@ -16352,11 +16594,19 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                         <span className="text-sm font-semibold text-slate-100 truncate">{idea.name}</span>
-                        <span
-                            onClick={e => { e.stopPropagation(); onNavigateApp(idea.appId); }}
-                            className="text-xs font-mono px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-400 cursor-pointer hover:bg-indigo-500/25 flex-shrink-0"
-                            title="Go to App"
-                        >{idea.appName}</span>
+                        {idea.appId ? (
+                            <span
+                                onClick={e => { e.stopPropagation(); onNavigateApp(idea.appId); }}
+                                className="text-xs font-mono px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-400 cursor-pointer hover:bg-indigo-500/25 flex-shrink-0"
+                                title="Go to App"
+                            >{idea.appName}</span>
+                        ) : (
+                            <span
+                                onClick={e => { e.stopPropagation(); onNavigateApp(null, idea); }}
+                                className="text-xs font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 cursor-pointer hover:bg-amber-500/30 flex-shrink-0 animate-pulse"
+                                title="Click to create app and assign"
+                            >⚠ unassigned</span>
+                        )}
                     </div>
                     <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
                         <span className="px-2 py-0.5 rounded font-semibold uppercase tracking-wider"
