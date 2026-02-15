@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.69.2">
+    <meta name="version" content="8.69.3">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -5878,21 +5878,28 @@ If vague, suggest stepping back to refine the idea definition before deep explor
             const ideaRef = this._ref(uid).child(ideaId);
             const snap = await ideaRef.child('activeSession').once('value');
             if (snap.val()) throw new Error('Idea already has an active session');
-            await ideaRef.child('activeSession').set({
-                sessionId: sessionData.sessionId,
-                status: 'active',
-                createdAt: new Date().toISOString(),
-                lastActivityAt: new Date().toISOString(),
-                briefDownloaded: false,
-                artifactsReceived: 0,
-                ideaPhaseAtStart: sessionData.ideaPhaseAtStart
+            const now = new Date().toISOString();
+            await ideaRef.update({
+                activeSession: {
+                    sessionId: sessionData.sessionId,
+                    status: 'active',
+                    createdAt: now,
+                    lastActivityAt: now,
+                    briefDownloaded: false,
+                    artifactsReceived: 0,
+                    ideaPhaseAtStart: sessionData.ideaPhaseAtStart
+                },
+                updatedAt: now // v8.69.3: Bump updatedAt so idea sorts as recent
             });
             console.log(`[CC] Session ${sessionData.sessionId} activated on idea ${ideaId}`);
         },
 
         // v8.67.0: Session lifecycle — complete
         async completeSession(uid, ideaId) {
-            await this._ref(uid).child(ideaId).child('activeSession').set(null);
+            await this._ref(uid).child(ideaId).update({
+                activeSession: null,
+                updatedAt: new Date().toISOString() // v8.69.3: Bump updatedAt on completion
+            });
         },
 
         // v8.67.0: Session lifecycle — abandon
@@ -6228,12 +6235,40 @@ If vague, suggest stepping back to refine the idea definition before deep explor
     function getRecentIdeas(globalIdeas, globalConcepts, apps, maxCount = 8) {
         const active = [...(globalIdeas || [])].filter(idea => idea.status === 'active');
 
-        // Two-tier sort: active sessions first, then pending by recency
-        const sortByRecency = (a, b) => {
-            const dateA = a.lastSessionDate || new Date(a.updatedAt || a.createdAt || 0).getTime();
-            const dateB = b.lastSessionDate || new Date(b.updatedAt || b.createdAt || 0).getTime();
-            return (typeof dateB === 'number' ? dateB : 0) - (typeof dateA === 'number' ? dateA : 0);
+        // v8.69.3: Compute best recency timestamp from all available signals
+        const getRecencyTimestamp = (idea) => {
+            const candidates = [];
+            // 1. lastSessionDate (set by ODRC import)
+            if (idea.lastSessionDate) {
+                candidates.push(typeof idea.lastSessionDate === 'number'
+                    ? idea.lastSessionDate
+                    : new Date(idea.lastSessionDate).getTime());
+            }
+            // 2. Most recent sessionLog entry date
+            if (idea.sessionLog?.length > 0) {
+                const lastEntry = idea.sessionLog[idea.sessionLog.length - 1];
+                if (lastEntry.date) {
+                    candidates.push(typeof lastEntry.date === 'number'
+                        ? lastEntry.date
+                        : new Date(lastEntry.date).getTime());
+                }
+                if (lastEntry.completedAt) candidates.push(new Date(lastEntry.completedAt).getTime());
+            }
+            // 3. Active session timestamps
+            if (idea.activeSession) {
+                if (idea.activeSession.lastActivityAt) candidates.push(new Date(idea.activeSession.lastActivityAt).getTime());
+                if (idea.activeSession.createdAt) candidates.push(new Date(idea.activeSession.createdAt).getTime());
+            }
+            // 4. updatedAt / createdAt fallback
+            if (idea.updatedAt) candidates.push(new Date(idea.updatedAt).getTime());
+            if (idea.createdAt) candidates.push(new Date(idea.createdAt).getTime());
+            // Return the most recent valid timestamp
+            const valid = candidates.filter(t => t && !isNaN(t));
+            return valid.length > 0 ? Math.max(...valid) : 0;
         };
+
+        // Two-tier sort: active sessions first, then pending by recency
+        const sortByRecency = (a, b) => getRecencyTimestamp(b) - getRecencyTimestamp(a);
         const withSession = active.filter(i => i.activeSession).sort(sortByRecency);
         const withoutSession = active.filter(i => !i.activeSession).sort(sortByRecency);
         const sorted = [...withSession, ...withoutSession].slice(0, maxCount);
