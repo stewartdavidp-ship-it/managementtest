@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.68.0">
+    <meta name="version" content="8.69.0">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2879,7 +2879,9 @@
                             targetIdea: null,
                             sourceLink: item.source_link,
                             isTangent: item.is_tangent || false,
-                            affinity: item.affinity || null
+                            affinity: item.affinity || null,
+                            targetIdeaSlug: (item.is_tangent && item.affinity)
+                                ? item.affinity : null
                         });
                     }
                 }
@@ -2915,8 +2917,30 @@
                 sessionNumber: sessionData.session_id || null,
                 appId: sessionData.app || null
             };
+        },
+
+        // v8.69.0: Extract debrief data from session package
+        extractDebrief(sessionData, debriefContent) {
+            return {
+                summary: sessionData.debrief_summary || null,
+                fullContent: debriefContent || null,
+                nextSession: sessionData.next_session || null
+            };
         }
     };
+
+    // v8.69.0: Detect whether a zip is a session package (contains session.json at root)
+    function isSessionPackageZip(zip) {
+        const paths = [];
+        zip.forEach((path) => paths.push(path));
+        const hasSessionJson = paths.some(p =>
+            p === 'session.json' || p.endsWith('/session.json')
+        );
+        const hasDebrief = paths.some(p =>
+            p === 'debrief.md' || p.endsWith('/debrief.md')
+        );
+        return { isSessionPackage: hasSessionJson, hasDebrief };
+    }
 
     // =========================================================================
     // ODRC CONTENT DETECTION (v8.61.0 — Idea-to-Chat Pipeline Phase 3)
@@ -3044,9 +3068,31 @@
 
     // Execute ODRC import — write concepts, generate summary, add session log entry
     async function executeODRCImport(uid, linkedIdea, checkedItems, globalIdeas, github, app, sessionType, pendingImport) {
-        // 1. Execute concept updates via ODRCUpdateIngestionService.execute()
-        // Set ideaOrigin on each new concept to linkedIdea.id
-        const updatesForExecution = checkedItems.map(item => ({
+        // v8.69.0: Separate tangent items that route to different ideas
+        const primaryItems = [];
+        const tangentRoutes = {}; // { ideaId: [items] }
+
+        for (const item of checkedItems) {
+            if (item.targetIdeaSlug && item.targetIdeaSlug !== (linkedIdea.slug || IdeaManager.generateSlug(linkedIdea.name))) {
+                const targetIdea = (globalIdeas || []).find(i =>
+                    i.slug === item.targetIdeaSlug ||
+                    IdeaManager.generateSlug(i.name) === item.targetIdeaSlug
+                );
+                if (targetIdea) {
+                    if (!tangentRoutes[targetIdea.id]) tangentRoutes[targetIdea.id] = [];
+                    tangentRoutes[targetIdea.id].push({
+                        ...item,
+                        overrideIdeaId: targetIdea.id
+                    });
+                    continue;
+                }
+                console.warn('[CC] Tangent affinity unresolved:', item.targetIdeaSlug, '— falling back to primary idea');
+            }
+            primaryItems.push(item);
+        }
+
+        // 1. Execute primary items on linked idea
+        const updatesForExecution = primaryItems.map(item => ({
             ...item,
             overrideIdeaId: item.action === 'create' ? linkedIdea.id : undefined
         }));
@@ -3055,8 +3101,20 @@
         const created = results.filter(r => r.action === 'create' && r.status === 'success').length;
         const resolved = results.filter(r => r.action === 'resolve' && r.status === 'success').length;
 
+        // v8.69.0: Execute tangent items on their target ideas
+        let tangentCreated = 0;
+        for (const [ideaId, items] of Object.entries(tangentRoutes)) {
+            try {
+                const tangentResults = await ODRCUpdateIngestionService.execute(uid, items, globalIdeas);
+                tangentCreated += tangentResults.filter(r => r.action === 'create' && r.status === 'success').length;
+            } catch (e) {
+                console.warn('[CC] Tangent routing failed for idea', ideaId, ':', e.message);
+            }
+        }
+
         // 2. Generate summary via ClaudeAPIService (best-effort)
         let summary = `${created} concept(s) created, ${resolved} OPEN(s) resolved`;
+        if (tangentCreated > 0) summary += `, ${tangentCreated} tangent(s) routed`;
         try {
             if (ClaudeAPIService.isConfigured()) {
                 summary = await ClaudeAPIService.call({
@@ -3074,12 +3132,13 @@
         let sessionLogEntry;
         if (pendingImport?.sessionData) {
             sessionLogEntry = SessionPackageProcessor.buildSessionLogEntry(pendingImport.sessionData);
-            // Override with AI summary if we generated a meaningful one
             const defaultSummary = `${created} concept(s) created, ${resolved} OPEN(s) resolved`;
+            if (tangentCreated > 0 && summary === defaultSummary) {
+                summary += `, ${tangentCreated} tangent(s) routed`;
+            }
             if (summary !== defaultSummary) {
                 sessionLogEntry.summary = summary;
             }
-            // Ensure actual counts from execution
             sessionLogEntry.conceptsCreated = created;
             sessionLogEntry.conceptsResolved = resolved;
         } else {
@@ -3110,13 +3169,28 @@
 
         await IdeaManager.addSessionLogEntry(uid, linkedIdea.id, sessionLogEntry);
 
+        // v8.69.0: Store debrief if present (fire-and-forget after primary import)
+        if (pendingImport?.debriefContent) {
+            try {
+                await IdeaManager.storeDebrief(uid, linkedIdea.id,
+                    sessionLogEntry.sessionId, {
+                        summary: pendingImport.sessionData?.debrief_summary || null,
+                        content: pendingImport.debriefContent,
+                        nextSession: pendingImport.sessionData?.next_session || null
+                    }
+                );
+            } catch (e) {
+                console.warn('[CC] Debrief storage failed:', e.message);
+            }
+        }
+
         // v8.67.0: Clear active session after successful import
         if (linkedIdea.activeSession) {
             await IdeaManager.completeSession(uid, linkedIdea.id);
         }
 
         // 4. Return results for display
-        return { created, resolved, summary, sessionId: sessionLogEntry.sessionId };
+        return { created, resolved, tangentCreated, summary, sessionId: sessionLogEntry.sessionId };
     }
 
     // =========================================================================
@@ -5846,6 +5920,18 @@ If vague, suggest stepping back to refine the idea definition before deep explor
             });
         },
 
+        // v8.69.0: Store debrief for a session
+        async storeDebrief(uid, ideaId, sessionId, debrief) {
+            await this._ref(uid).child(ideaId)
+                .child('debriefs').child(sessionId).set({
+                    summary: debrief.summary,
+                    content: debrief.content,
+                    nextSession: debrief.nextSession,
+                    storedAt: new Date().toISOString()
+                });
+            console.log(`[CC] Stored debrief for ${sessionId} on idea ${ideaId}`);
+        },
+
         // Create a new idea
         async create(uid, { name, description, type = 'base', appId = null, parentIdeaId = null, projectId = null }) {
             if (!IDEA_TYPES.includes(type)) {
@@ -7533,6 +7619,81 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         // Load repo files
         const updateApp = (appId, updates) => setApps(prev => ({ ...prev, [appId]: { ...prev[appId], ...updates } }));
         
+        // v8.69.0: Process session package zip — extract, validate, route to import checklist
+        const processSessionPackage = async (zip, zipFilename, hasDebrief) => {
+            console.log('[CC] Processing session package:', zipFilename);
+
+            // 1. Extract session.json
+            const sessionJsonEntry = zip.file('session.json')
+                || zip.file(/session\.json$/)[0];
+            if (!sessionJsonEntry) {
+                console.error('[CC] Session package missing session.json');
+                await showAlert('Session package missing session.json', '❌ Error');
+                return;
+            }
+
+            const sessionJsonContent = await sessionJsonEntry.async('string');
+            let sessionData;
+            try {
+                sessionData = JSON.parse(sessionJsonContent);
+            } catch (e) {
+                console.error('[CC] session.json parse error:', e.message);
+                await showAlert('Invalid session.json: ' + e.message, '❌ Error');
+                return;
+            }
+
+            // 2. Validate
+            const validation = SessionPackageProcessor.validate(sessionData);
+            if (!validation.valid) {
+                console.error('[CC] session.json validation errors:', validation.errors);
+                await showAlert(
+                    `Validation failed:\n${validation.errors.join('\n')}`,
+                    '❌ Validation Error'
+                );
+                return;
+            }
+            if (validation.warnings.length > 0) {
+                console.warn('[CC] session.json warnings:', validation.warnings);
+            }
+
+            // 3. Extract debrief.md if present
+            let debriefContent = null;
+            if (hasDebrief) {
+                const debriefEntry = zip.file('debrief.md')
+                    || zip.file(/debrief\.md$/)[0];
+                if (debriefEntry) {
+                    debriefContent = await debriefEntry.async('string');
+                }
+            }
+
+            // 4. Collect artifact filenames
+            const artifactFiles = [];
+            zip.forEach((path, entry) => {
+                if (path !== 'session.json' && path !== 'debrief.md' && !entry.dir) {
+                    artifactFiles.push(path);
+                }
+            });
+
+            // 5. Map ODRC items
+            const parsedUpdates = SessionPackageProcessor.toIngestionUpdates(sessionData);
+            const metadata = SessionPackageProcessor.extractMetadata(sessionData);
+
+            // 6. Route to import checklist
+            setPendingOdrcImport({
+                fileName: zipFilename,
+                fullContent: sessionJsonContent,
+                odrcSection: null,
+                metadata,
+                parsedUpdates,
+                sourceApp: metadata.appId,
+                artifactType: 'session-json',
+                sessionData,
+                debriefContent,
+                artifactFiles,
+                validationWarnings: validation.warnings
+            });
+        };
+
         // File upload - now accepts multiple file types
         const handleFileDrop = (e) => {
             e.preventDefault();
@@ -7564,11 +7725,18 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                     
                     try {
                         const zip = await JSZip.loadAsync(file);
-                        
+
+                        // v8.69.0: Session package detection — highest priority
+                        const { isSessionPackage, hasDebrief } = isSessionPackageZip(zip);
+                        if (isSessionPackage) {
+                            await processSessionPackage(zip, file.name, hasDebrief);
+                            return;
+                        }
+
                         // Check if this is a multi-app archive (gs-active, CC deploy package, or any mixed zip)
                         const allPaths = [];
                         zip.forEach((path) => { allPaths.push(path); });
-                        
+
                         const isMultiApp = isMultiAppZip(zip, apps);
                         console.log('[SmartDeploy] isMultiApp:', isMultiApp);
                         
@@ -12666,6 +12834,7 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         const [importing, setImporting] = React.useState(false);
         const [results, setResults] = React.useState(null);
         const [pushingDoc, setPushingDoc] = React.useState(false);
+        const [advancing, setAdvancing] = React.useState(false); // v8.69.0: phase ratchet state (hoisted to avoid conditional hook)
         // v8.62.0 A7: Inline idea creation state
         const [showInlineCreate, setShowInlineCreate] = React.useState(false);
         const [newIdeaName, setNewIdeaName] = React.useState(() => {
@@ -12778,7 +12947,23 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         const prevPhase = linkedIdea ? computeIdeaPhase((globalConcepts || []).filter(c => c.ideaOrigin === linkedIdea.id)) : null;
 
         if (results) {
-            const newPhase = linkedIdea ? computeIdeaPhase((globalConcepts || []).filter(c => c.ideaOrigin === linkedIdea.id)) : null;
+            const currentConcepts = (globalConcepts || []).filter(c => c.ideaOrigin === linkedIdea?.id);
+            const computedPhase = linkedIdea ? computeIdeaPhase(currentConcepts) : null;
+            const storedPhase = linkedIdea?.phase || 'exploring';
+            const phaseAdvanceCandidate = computedPhase && PHASE_ORDER.indexOf(computedPhase) > PHASE_ORDER.indexOf(storedPhase);
+
+            const handleAdvancePhase = async () => {
+                if (!firebaseUid || !linkedIdea) return;
+                setAdvancing(true);
+                try {
+                    await IdeaManager.advancePhase(firebaseUid, linkedIdea.id, computedPhase);
+                    await showAlert(`Phase advanced to ${computedPhase}`, '✅ Phase Updated');
+                } catch (e) {
+                    await showAlert('Phase advance failed: ' + e.message, '❌ Error');
+                }
+                setAdvancing(false);
+            };
+
             return (
                 <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={close}>
                     <div className="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
@@ -12786,16 +12971,55 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                             <div className="text-4xl mb-3">✅</div>
                             <h2 className="text-lg font-bold mb-2">Session {results.sessionId} imported</h2>
                             <p className="text-slate-300 mb-1">
-                                {results.created} concept{results.created !== 1 ? 's' : ''} created, {results.resolved} OPEN{results.resolved !== 1 ? 's' : ''} resolved
+                                {results.created} concept{results.created !== 1 ? 's' : ''} created,{' '}
+                                {results.resolved} OPEN{results.resolved !== 1 ? 's' : ''} resolved
+                                {results.tangentCreated > 0 && (
+                                    <>, {results.tangentCreated} tangent{results.tangentCreated !== 1 ? 's' : ''} routed</>
+                                )}
                             </p>
-                            {prevPhase && newPhase && prevPhase !== newPhase && (
-                                <p className="text-sm text-amber-300 mt-2">
-                                    Phase: {prevPhase} → {newPhase}
-                                </p>
-                            )}
                             <p className="text-xs text-slate-500 mt-2">{results.summary}</p>
-                            {pushingDoc && <p className="text-xs text-slate-400 mt-1 animate-pulse">Pushing session doc to repo...</p>}
                         </div>
+
+                        {/* v8.69.0: Phase Ratchet Prompt */}
+                        {phaseAdvanceCandidate && (
+                            <div className="mt-4 bg-amber-900/20 border border-amber-800/50 rounded-lg p-4">
+                                <div className="text-sm text-amber-200 mb-2">
+                                    <span className="font-medium">Phase Check:</span>{' '}
+                                    Stored: <span className="font-mono">{storedPhase}</span> →{' '}
+                                    Computed: <span className="font-mono">{computedPhase}</span>
+                                </div>
+                                <p className="text-xs text-amber-300/70 mb-3">
+                                    The ODRC distribution suggests this idea has matured. Advance phase?
+                                </p>
+                                <div className="flex gap-2 justify-center">
+                                    <button onClick={close}
+                                        className="px-3 py-1.5 rounded text-xs bg-slate-700 hover:bg-slate-600">
+                                        Keep {storedPhase}
+                                    </button>
+                                    <button onClick={handleAdvancePhase} disabled={advancing}
+                                        className="px-3 py-1.5 rounded text-xs bg-amber-700 hover:bg-amber-600 font-medium disabled:opacity-50">
+                                        {advancing ? '⏳...' : `Advance to ${computedPhase}`}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* v8.69.0: Debrief & Next Session */}
+                        {pendingOdrcImport?.sessionData?.debrief_summary && (
+                            <div className="mt-3 text-xs text-slate-400">
+                                📋 {pendingOdrcImport.sessionData.debrief_summary}
+                            </div>
+                        )}
+                        {pendingOdrcImport?.sessionData?.next_session && (
+                            <div className="mt-1 text-xs text-slate-500">
+                                📎 Next: {typeof pendingOdrcImport.sessionData.next_session === 'string'
+                                    ? pendingOdrcImport.sessionData.next_session
+                                    : pendingOdrcImport.sessionData.next_session.focus || 'See session data'}
+                            </div>
+                        )}
+
+                        {pushingDoc && <p className="text-xs text-slate-400 mt-2 animate-pulse">Pushing session doc to repo...</p>}
+
                         <div className="flex justify-center mt-4">
                             <button onClick={close} className="px-4 py-2 rounded text-sm bg-indigo-600 hover:bg-indigo-500 font-medium">Done</button>
                         </div>
@@ -12892,6 +13116,33 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                         )}
                     </div>
 
+                    {/* v8.69.0: Session Package Header */}
+                    {pendingOdrcImport.artifactType === 'session-json' && pendingOdrcImport.sessionData && (
+                        <div className="mx-4 mt-3 bg-slate-900/50 rounded-lg p-3 border border-slate-700">
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-lg">📦</span>
+                                <span className="font-medium text-slate-200">
+                                    Session Package — {pendingOdrcImport.sessionData.session_id}
+                                </span>
+                            </div>
+                            <div className="text-xs text-slate-400 space-y-1">
+                                <div>Schema: {pendingOdrcImport.sessionData.schema_version} ·
+                                    Mode: {pendingOdrcImport.sessionData.session_config?.mode || 'exploration'} ·
+                                    Chain: {pendingOdrcImport.sessionData.chain?.link_count || 1} link(s)
+                                </div>
+                                <div className="text-slate-300">{pendingOdrcImport.sessionData.context_summary}</div>
+                                {pendingOdrcImport.validationWarnings?.length > 0 && (
+                                    <div className="text-amber-400 mt-1">
+                                        ⚠️ {pendingOdrcImport.validationWarnings.length} warning(s):
+                                        {pendingOdrcImport.validationWarnings.map((w, i) => (
+                                            <div key={i} className="ml-4">· {w}</div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
                     {/* Checklist */}
                     <div className="flex-1 overflow-y-auto p-4 space-y-3">
                         {checkedItems.map((item, idx) => (
@@ -12913,6 +13164,12 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                                         </div>
                                         <textarea value={item.description} onChange={e => updateItem(idx, { description: e.target.value })}
                                             rows={2} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-300 resize-y" />
+                                        {/* v8.69.0: Tangent item indicator */}
+                                        {item.isTangent && (
+                                            <span className="text-xs px-1.5 py-0.5 rounded bg-orange-900/50 text-orange-300 mt-1 inline-block">
+                                                tangent{item.affinity ? ` → ${item.affinity}` : ' — orphan'}
+                                            </span>
+                                        )}
                                         {/* v8.61.1: Resolution text display for flex RESOLVE items */}
                                         {item.action === 'resolve' && item.resolution && (
                                             <div className="text-xs text-slate-400 mt-1">
@@ -12957,6 +13214,34 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                             </div>
                         ))}
                     </div>
+
+                    {/* v8.69.0: Debrief Preview */}
+                    {pendingOdrcImport.debriefContent && (
+                        <details className="mx-4 mb-2 bg-slate-900/50 rounded-lg border border-slate-700">
+                            <summary className="p-3 cursor-pointer text-sm text-slate-300 hover:text-white">
+                                📋 Session Debrief
+                                {pendingOdrcImport.sessionData?.debrief_summary && (
+                                    <span className="text-xs text-slate-500 ml-2">
+                                        — {pendingOdrcImport.sessionData.debrief_summary.substring(0, 80)}
+                                        {pendingOdrcImport.sessionData.debrief_summary.length > 80 ? '…' : ''}
+                                    </span>
+                                )}
+                            </summary>
+                            <div className="p-3 border-t border-slate-700 text-xs text-slate-400 max-h-48 overflow-y-auto whitespace-pre-wrap font-mono">
+                                {pendingOdrcImport.debriefContent}
+                            </div>
+                        </details>
+                    )}
+
+                    {/* v8.69.0: Artifact Inventory */}
+                    {pendingOdrcImport.artifactFiles?.length > 0 && (
+                        <div className="mx-4 mb-2 text-xs text-slate-500">
+                            📎 {pendingOdrcImport.artifactFiles.length} artifact(s):
+                            {pendingOdrcImport.artifactFiles.map((f, i) => (
+                                <span key={i} className="ml-2">{f.split('/').pop()}</span>
+                            ))}
+                        </div>
+                    )}
 
                     {/* Footer */}
                     <div className="flex items-center justify-between p-4 border-t border-slate-700">
@@ -15943,6 +16228,7 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
     // v8.68.0: Staleness thresholds for active sessions
     const STALE_WARNING_DAYS = 7;
     const STALE_ESCALATED_DAYS = 14;
+    const PHASE_ORDER = ['inception', 'exploring', 'converging', 'spec-ready', 'complete'];
 
     // v8.68.0: Dual-state session card (active/pending)
     function IdeaWorkCard({ idea, onNavigateIdea, onNavigateApp, onContinue, onUploadResults, onAbandon }) {
@@ -16173,6 +16459,86 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
             setPushing(false);
         };
 
+        // v8.69.0: Download context package (codebase + specs + ODRC state)
+        const downloadContextPackage = async () => {
+            try {
+                const ctxZip = new JSZip();
+
+                // 1. Codebase from GitHub
+                if (app && github) {
+                    const repo = app.repos?.test || app.testRepo || app.repos?.prod || app.prodRepo;
+                    if (repo) {
+                        for (const path of ['index.html', 'sw.js', 'manifest.json', 'CLAUDE.md']) {
+                            try {
+                                const f = await github.getFile(repo, path);
+                                if (f?.content) ctxZip.file(`codebase/${path}`, atob(f.content));
+                            } catch {} // Skip if not found
+                        }
+                    }
+                }
+
+                // 2. Existing spec docs from prior spec sessions
+                const specSessions = (idea.sessionLog || []).filter(s => s.type === 'spec' && s.docPath);
+                if (specSessions.length > 0 && github && app) {
+                    const repo = app.repos?.test || app.testRepo || app.repos?.prod || app.prodRepo;
+                    if (repo) {
+                        for (const specSession of specSessions) {
+                            try {
+                                const f = await github.getFile(repo, specSession.docPath);
+                                if (f?.content) {
+                                    ctxZip.file(`specs/${specSession.docPath.split('/').pop()}`, atob(f.content));
+                                }
+                            } catch {} // Skip if not found
+                        }
+                    }
+                }
+
+                // 3. Current ODRC state snapshot
+                const activeConcepts = globalConcepts.filter(c => c.ideaOrigin === idea.id && c.status === 'active');
+                const odrcSnapshot = activeConcepts.map(c => ({
+                    type: c.type,
+                    content: c.content,
+                    status: c.status,
+                    createdAt: c.createdAt
+                }));
+                ctxZip.file('context/odrc-state.json', JSON.stringify(odrcSnapshot, null, 2));
+
+                // 4. Session history summary
+                const sessionSummary = (idea.sessionLog || []).map(s => ({
+                    sessionId: s.sessionId,
+                    date: s.date,
+                    type: s.type,
+                    summary: s.summary,
+                    conceptsCreated: s.conceptsCreated,
+                    conceptsResolved: s.conceptsResolved
+                }));
+                ctxZip.file('context/session-history.json', JSON.stringify(sessionSummary, null, 2));
+
+                // Generate and download
+                const blob = await ctxZip.generateAsync({ type: 'blob' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `context-package-${slug}-S${String(sessionNum).padStart(3, '0')}.zip`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                // Update active session activity if exists
+                if (firebaseUid && idea.activeSession) {
+                    try {
+                        await IdeaManager.updateSessionActivity(firebaseUid, idea.id, {
+                            contextPackageDownloaded: true
+                        });
+                    } catch {} // Best-effort
+                }
+
+                console.log('[CC] Downloaded context package for', idea.name);
+                await showAlert('Context package downloaded', '📦 Downloaded');
+            } catch (e) {
+                await showAlert('Context package download failed: ' + e.message, '❌ Error');
+            }
+        };
+
         const briefSizeKB = briefText ? (briefText.length / 1024).toFixed(1) : '...';
 
         return (
@@ -16289,6 +16655,12 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                             <button onClick={copyBrief} disabled={!briefText}
                                 className="px-4 py-2 rounded text-sm bg-indigo-600 hover:bg-indigo-500 font-medium disabled:opacity-50">📋 Copy Brief</button>
                         )}
+                        {/* v8.69.0: Context Package — always visible */}
+                        <button onClick={downloadContextPackage}
+                            className="px-4 py-2 rounded text-sm bg-amber-700 hover:bg-amber-600 font-medium"
+                            title="Download codebase + specs + ODRC state for spec/CLAUDE.md sessions">
+                            📦 Context Package
+                        </button>
                         <button onClick={pushToRepo} disabled={pushing || !briefText}
                             className="px-4 py-2 rounded text-sm bg-green-700 hover:bg-green-600 font-medium disabled:opacity-50">
                             {pushing ? '⏳ Pushing...' : '🚀 Push to Repo'}
