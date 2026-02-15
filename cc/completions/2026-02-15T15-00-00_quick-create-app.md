@@ -6,7 +6,7 @@ files:
   - path: "index.html"
     action: modified
 commits:
-  - sha: "pending"
+  - sha: "9bc3c9d"
     message: "Add Quick Create App flow from unassigned idea badge (v8.69.7)"
 odrc:
   new_decisions:
