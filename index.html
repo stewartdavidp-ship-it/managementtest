@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.69.0">
+    <meta name="version" content="8.69.1">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -10952,13 +10952,17 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                     // Only stop spinner when deployment finishes (success or failure)
                     setIsDeploying(false);
                     // Only set deployCompleted if deploy was clicked this session
-                    if (activeDeployment.status === 'success' && 
+                    if (activeDeployment.status === 'success' &&
                         activeDeployment.id !== lastCompletedDeployId &&
                         deployClickedThisSession.current) {
                         setDeployCompleted(true);
                         setLastCompletedDeployId(activeDeployment.id);
                     }
                 }
+            } else {
+                // v8.69.0: Reset isDeploying when no active deployment exists
+                // (e.g., after auto-close removes deployment, or doc-only push with no deploy)
+                setIsDeploying(false);
             }
         }, [activeDeployment, activeDeployment?.status, activeDeployment?.id, lastCompletedDeployId]);
         
@@ -12097,6 +12101,11 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                                                 }
                                                 } finally {
                                                     setBatchActionRunning(false);
+                                                    // v8.69.0: Reset isDeploying for doc-only pushes (no activeDeployment created)
+                                                    if (selectedDeployFiles.length === 0) {
+                                                        setIsDeploying(false);
+                                                        setDeployCompleted(true);
+                                                    }
                                                 }
                                                 
                                                 // v8.36.1: Smart reset — use app's intelligent default, not always TEST
