@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.70.4">
+    <meta name="version" content="8.70.5">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2979,7 +2979,8 @@
             }
             if (sessionData.idea) {
                 if (!sessionData.idea.slug) errors.push('Missing idea.slug');
-                if (!sessionData.idea.id) errors.push('Missing idea.id');
+                // v8.70.5: idea.id: null is valid for genesis ideas (new ideas not yet in CC)
+                if (!sessionData.idea.id) warnings.push('Missing idea.id — genesis idea (will need to create or map during import)');
                 const validPhases = ['inception', 'exploring', 'converging', 'spec-ready', 'complete'];
                 if (sessionData.idea.phase && !validPhases.includes(sessionData.idea.phase)) {
                     warnings.push(`Unknown idea phase: ${sessionData.idea.phase}`);
@@ -3070,6 +3071,9 @@
             return {
                 ideaSlug: sessionData.idea?.slug || null,
                 ideaId: sessionData.idea?.id || null,
+                ideaName: sessionData.idea?.name || null,
+                ideaPhase: sessionData.idea?.phase || null,
+                isGenesisIdea: !sessionData.idea?.id,  // v8.70.5: flag for ideas not yet in CC
                 sessionNumber: sessionData.session_id || null,
                 appId: sessionData.app || null
             };
@@ -12254,7 +12258,7 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                                 <div className="text-sm font-medium text-purple-200">ODRC Updates detected — {pendingOdrcImport.parsedUpdates.length} item{pendingOdrcImport.parsedUpdates.length !== 1 ? 's' : ''}</div>
                                 <div className="text-xs text-purple-400/70 mt-0.5">
                                     From: {pendingOdrcImport.fileName}
-                                    {pendingOdrcImport.metadata?.ideaId && ` · IdeaId: ${pendingOdrcImport.metadata.ideaId}`}
+                                    {pendingOdrcImport.metadata?.isGenesisIdea ? ' · 🌱 Genesis Idea' : pendingOdrcImport.metadata?.ideaId ? ` · IdeaId: ${pendingOdrcImport.metadata.ideaId}` : ''}
                                     {pendingOdrcImport.metadata?.ideaSlug && ` · Idea: ${pendingOdrcImport.metadata.ideaSlug}`}
                                     {pendingOdrcImport.metadata?.sessionNumber && ` · Session: ${pendingOdrcImport.metadata.sessionNumber}`}
                                 </div>
@@ -13789,9 +13793,12 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         const [pushingDoc, setPushingDoc] = React.useState(false);
         const [advancing, setAdvancing] = React.useState(false); // v8.69.0: phase ratchet state (hoisted to avoid conditional hook)
         // v8.62.0 A7: Inline idea creation state
-        const [showInlineCreate, setShowInlineCreate] = React.useState(false);
+        // v8.70.5: Auto-open create form for genesis ideas when no auto-link found
+        const isGenesis = pendingOdrcImport.metadata?.isGenesisIdea;
+        const [showInlineCreate, setShowInlineCreate] = React.useState(() => isGenesis && !linkedIdeaId);
         const [newIdeaName, setNewIdeaName] = React.useState(() => {
-            // Pre-fill from metadata slug: kebab-case → Title Case
+            // v8.70.5: Prefer explicit name from session package, fall back to slug → Title Case
+            if (pendingOdrcImport.metadata?.ideaName) return pendingOdrcImport.metadata.ideaName;
             const slug = pendingOdrcImport.metadata?.ideaSlug;
             if (slug) return slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
             return '';
@@ -13994,6 +14001,20 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                         </div>
                         <button onClick={close} className="text-slate-400 hover:text-white text-xl">✕</button>
                     </div>
+
+                    {/* v8.70.5: Genesis idea banner */}
+                    {isGenesis && !linkedIdeaId && (
+                        <div className="mx-4 mt-3 bg-amber-900/20 border border-amber-700/50 rounded-lg p-3">
+                            <div className="flex items-center gap-2 text-amber-200 text-sm font-medium">
+                                <span>🌱</span>
+                                <span>Genesis Idea — Not yet in Command Center</span>
+                            </div>
+                            <p className="text-xs text-amber-300/70 mt-1">
+                                This session references an idea that doesn't exist in CC yet.
+                                Create it below or map to an existing idea.
+                            </p>
+                        </div>
+                    )}
 
                     {/* Idea Picker — v8.62.0 A7: includes Create New Idea option */}
                     <div className="px-4 pt-3 pb-2 border-b border-slate-700/50">
