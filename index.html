@@ -10493,7 +10493,7 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                     {/* [v8.63.2] Environments moved to Infrastructure satellite (N5) */}
                     
                     {view === 'settings' && (
-                        <SettingsView token={githubToken} setToken={setGithubToken} settings={settings} setSettings={setSettings} repoCount={availableRepos.length} syncStatus={syncStatus} onForceSync={handleForceSync} config={config} onConfigChange={handleConfigChange} firebaseUid={firebaseUid} firebaseUser={firebaseUser} teamMembers={teamMembers} teamMembership={teamMembership} showAlert={showAlert} showConfirm={showConfirm} completionFileSettings={completionFileSettings} />
+                        <SettingsView token={githubToken} setToken={setGithubToken} settings={settings} setSettings={setSettings} repoCount={availableRepos.length} syncStatus={syncStatus} onForceSync={handleForceSync} config={config} onConfigChange={handleConfigChange} firebaseUid={firebaseUid} firebaseUser={firebaseUser} teamMembers={teamMembers} teamMembership={teamMembership} showAlert={showAlert} showConfirm={showConfirm} completionFileSettings={completionFileSettings} globalCompletionJobs={globalCompletionJobs} />
                     )}
                     
                     {view === 'setup' && (
@@ -24580,7 +24580,7 @@ The developer uses Claude for iterative development — each session should:
     // SETTINGS VIEW
     // =========================================================================
     
-    function SettingsView({ token, setToken, settings, setSettings, repoCount, syncStatus, onForceSync, config, onConfigChange, firebaseUid, firebaseUser, teamMembers, teamMembership, showAlert, showConfirm, completionFileSettings }) {
+    function SettingsView({ token, setToken, settings, setSettings, repoCount, syncStatus, onForceSync, config, onConfigChange, firebaseUid, firebaseUser, teamMembers, teamMembership, showAlert, showConfirm, completionFileSettings, globalCompletionJobs }) {
         const [show, setShow] = React.useState(false);
         const [testing, setTesting] = React.useState(false);
         const [result, setResult] = React.useState(null);
