@@ -24807,52 +24807,46 @@ The developer uses Claude for iterative development — each session should:
                             )}
                         </div>
 
-                        {/* v8.70.5: One-off ODRC audit for existing completion jobs */}
+                        {/* v8.70.5: ODRC audit + batch processor for completion jobs */}
                         {(() => {
                             const [auditState, setAuditState] = React.useState({ running: false, results: null });
+                            const [batchState, setBatchState] = React.useState({ running: false, progress: null, done: false });
+
                             const runAudit = async () => {
                                 if (!firebaseUid) return;
                                 setAuditState({ running: true, results: null });
+                                setBatchState({ running: false, progress: null, done: false });
                                 try {
                                     const allJobs = globalCompletionJobs || [];
                                     const jobsWithOdrc = allJobs.filter(j => j.odrc && !j.classified);
                                     const auditResults = [];
+                                    let totalCreates = 0, totalResolves = 0;
 
                                     for (const job of jobsWithOdrc) {
                                         const text = ODRCUpdateIngestionService.odrcToIngestionText(job.odrc);
                                         const parsed = ODRCUpdateIngestionService.parse(text);
-                                        const totalItems = (job.odrc.resolved_opens?.length || 0) +
-                                            (job.odrc.applied_decisions?.length || 0) +
-                                            (job.odrc.new_decisions?.length || 0) +
-                                            (job.odrc.new_rules?.length || 0) +
-                                            (job.odrc.new_constraints?.length || 0) +
-                                            (job.odrc.new_opens?.length || 0);
+                                        const creates = parsed.filter(p => p.action === 'create').length;
+                                        const resolves = parsed.filter(p => p.action === 'resolve').length;
+                                        totalCreates += creates;
+                                        totalResolves += resolves;
 
                                         auditResults.push({
-                                            jobId: job.id,
-                                            fileName: job.fileName,
-                                            task: job.task,
-                                            state: job.state,
-                                            totalOdrcItems: totalItems,
-                                            parseable: parsed.length,
-                                            resolves: parsed.filter(p => p.action === 'resolve').length,
-                                            creates: parsed.filter(p => p.action === 'create').length,
+                                            jobId: job.id, fileName: job.fileName, task: job.task,
+                                            state: job.state, parseable: parsed.length,
+                                            resolves, creates,
                                             odrcKeys: Object.keys(job.odrc).filter(k => Array.isArray(job.odrc[k]) && job.odrc[k].length > 0)
                                         });
                                     }
 
-                                    const alreadyClassified = allJobs.filter(j => j.odrc && j.classified);
-                                    const noOdrc = allJobs.filter(j => !j.odrc);
+                                    const alreadyClassified = allJobs.filter(j => j.odrc && j.classified).length;
+                                    const noOdrc = allJobs.filter(j => !j.odrc).length;
 
                                     setAuditState({
                                         running: false,
                                         results: {
-                                            total: allJobs.length,
-                                            withOdrc: jobsWithOdrc.length + alreadyClassified.length,
-                                            pendingImport: jobsWithOdrc.length,
-                                            alreadyImported: alreadyClassified.length,
-                                            noOdrc: noOdrc.length,
-                                            jobs: auditResults
+                                            total: allJobs.length, pendingImport: jobsWithOdrc.length,
+                                            alreadyImported: alreadyClassified, noOdrc,
+                                            totalCreates, totalResolves, jobs: auditResults
                                         }
                                     });
                                 } catch (e) {
@@ -24860,16 +24854,44 @@ The developer uses Claude for iterative development — each session should:
                                 }
                             };
 
+                            // Batch mark all pending as classified (acknowledge without importing concepts)
+                            const batchClassify = async () => {
+                                if (!firebaseUid) return;
+                                const pendingJobs = (globalCompletionJobs || []).filter(j => j.odrc && !j.classified);
+                                if (pendingJobs.length === 0) return;
+                                setBatchState({ running: true, progress: `Classifying 0/${pendingJobs.length}...`, done: false });
+                                let processed = 0;
+                                for (const job of pendingJobs) {
+                                    try {
+                                        await CompletionFileService._ref(firebaseUid).child(job.id).update({ classified: true });
+                                        processed++;
+                                        if (processed % 10 === 0 || processed === pendingJobs.length) {
+                                            setBatchState(prev => ({ ...prev, progress: `Classifying ${processed}/${pendingJobs.length}...` }));
+                                        }
+                                    } catch (e) { console.warn('[CC] Batch classify error:', job.id, e.message); }
+                                }
+                                setBatchState({ running: false, progress: null, done: true });
+                                setAuditState(prev => ({
+                                    ...prev,
+                                    results: prev.results ? {
+                                        ...prev.results, pendingImport: 0,
+                                        alreadyImported: prev.results.alreadyImported + processed,
+                                        jobs: []
+                                    } : prev.results
+                                }));
+                                await showAlert(`Marked ${processed} completion jobs as classified.`, '✅ Batch Complete');
+                            };
+
                             return (
                                 <div className="mt-4 pt-4 border-t border-slate-700">
                                     <div className="flex items-center justify-between mb-2">
                                         <div>
                                             <label className="text-sm text-slate-300 font-medium">ODRC Audit</label>
-                                            <p className="text-xs text-slate-500">Review all completion jobs for unprocessed ODRC data.</p>
+                                            <p className="text-xs text-slate-500">Review and batch-process completion jobs with unprocessed ODRC data.</p>
                                         </div>
-                                        <button onClick={runAudit} disabled={auditState.running}
+                                        <button onClick={runAudit} disabled={auditState.running || batchState.running}
                                             className="px-3 py-1.5 text-xs font-medium bg-purple-700 hover:bg-purple-600 text-white rounded-lg disabled:opacity-50">
-                                            {auditState.running ? '⏳ Auditing...' : '🔍 Run Audit'}
+                                            {auditState.running ? '⏳ Scanning...' : '🔍 Run Audit'}
                                         </button>
                                     </div>
 
@@ -24877,8 +24899,13 @@ The developer uses Claude for iterative development — each session should:
                                         <div className="text-xs text-red-400 bg-red-900/20 rounded p-2 mt-2">❌ {auditState.results.error}</div>
                                     )}
 
+                                    {batchState.progress && (
+                                        <div className="text-xs text-indigo-300 bg-indigo-900/20 rounded p-2 mt-2 animate-pulse">{batchState.progress}</div>
+                                    )}
+
                                     {auditState.results && !auditState.results.error && (
                                         <div className="mt-3 space-y-3">
+                                            {/* Summary cards */}
                                             <div className="grid grid-cols-4 gap-2">
                                                 <div className="bg-slate-700/50 rounded p-2 text-center">
                                                     <div className="text-lg font-bold">{auditState.results.total}</div>
@@ -24886,51 +24913,76 @@ The developer uses Claude for iterative development — each session should:
                                                 </div>
                                                 <div className="bg-purple-900/30 rounded p-2 text-center">
                                                     <div className="text-lg font-bold text-amber-300">{auditState.results.pendingImport}</div>
-                                                    <div className="text-xs text-slate-400">Pending Import</div>
+                                                    <div className="text-xs text-slate-400">Pending</div>
                                                 </div>
                                                 <div className="bg-green-900/30 rounded p-2 text-center">
                                                     <div className="text-lg font-bold text-green-300">{auditState.results.alreadyImported}</div>
-                                                    <div className="text-xs text-slate-400">Already Imported</div>
+                                                    <div className="text-xs text-slate-400">Classified</div>
                                                 </div>
                                                 <div className="bg-slate-700/30 rounded p-2 text-center">
                                                     <div className="text-lg font-bold text-slate-400">{auditState.results.noOdrc}</div>
-                                                    <div className="text-xs text-slate-400">No ODRC Data</div>
+                                                    <div className="text-xs text-slate-400">No ODRC</div>
                                                 </div>
                                             </div>
 
-                                            {auditState.results.jobs?.length > 0 && (
-                                                <div className="space-y-1 max-h-64 overflow-y-auto">
-                                                    <div className="text-xs font-bold text-amber-300 mb-1">
-                                                        ⏳ {auditState.results.pendingImport} jobs with unprocessed ODRC data:
+                                            {/* Batch action buttons */}
+                                            {auditState.results.pendingImport > 0 && (
+                                                <div className="bg-slate-700/30 rounded-lg p-3 space-y-2">
+                                                    <div className="text-xs text-slate-300 font-medium">
+                                                        {auditState.results.pendingImport} jobs · {auditState.results.totalCreates} creates · {auditState.results.totalResolves} resolves
                                                     </div>
-                                                    {auditState.results.jobs.map((j, i) => (
-                                                        <div key={i} className="bg-slate-700/30 rounded p-2 text-xs flex items-center justify-between">
-                                                            <div className="flex-1 min-w-0">
-                                                                <div className="font-medium text-slate-200 truncate">{j.task || j.fileName}</div>
-                                                                <div className="text-slate-500">
-                                                                    {j.totalOdrcItems} item{j.totalOdrcItems !== 1 ? 's' : ''}:
-                                                                    {j.resolves > 0 && <span className="text-green-400 ml-1">{j.resolves} resolve</span>}
-                                                                    {j.creates > 0 && <span className="text-blue-400 ml-1">{j.creates} create</span>}
-                                                                    <span className="text-slate-600 ml-2">[{j.odrcKeys.join(', ')}]</span>
-                                                                </div>
-                                                            </div>
-                                                            <span className={`px-1.5 py-0.5 rounded text-xs ml-2 ${
-                                                                j.state === 'new' ? 'bg-blue-900/50 text-blue-300' :
-                                                                j.state === 'reviewed' ? 'bg-amber-900/50 text-amber-300' :
-                                                                j.state === 'checked' ? 'bg-green-900/50 text-green-300' :
-                                                                'bg-slate-600 text-slate-300'
-                                                            }`}>{j.state}</span>
-                                                        </div>
-                                                    ))}
-                                                    <p className="text-xs text-slate-500 mt-2">
-                                                        → Go to Job History to import ODRC updates for each job.
+                                                    <div className="flex gap-2">
+                                                        <button onClick={batchClassify} disabled={batchState.running}
+                                                            className="px-3 py-1.5 text-xs font-medium bg-amber-700 hover:bg-amber-600 text-white rounded-lg disabled:opacity-50">
+                                                            {batchState.running ? '⏳ Processing...' : '✅ Batch Classify All (Skip Import)'}
+                                                        </button>
+                                                    </div>
+                                                    <p className="text-xs text-slate-500">
+                                                        Classify marks all jobs as reviewed without creating ODRC concepts. Use this for historical jobs. Future completion files will auto-populate the import modal in Job History.
                                                     </p>
                                                 </div>
                                             )}
 
+                                            {/* Pending job list (collapsed by default for large lists) */}
+                                            {auditState.results.jobs?.length > 0 && (() => {
+                                                const [expanded, setExpanded] = React.useState(false);
+                                                const displayJobs = expanded ? auditState.results.jobs : auditState.results.jobs.slice(0, 5);
+                                                return (
+                                                    <div>
+                                                        <button onClick={() => setExpanded(!expanded)}
+                                                            className="text-xs text-slate-400 hover:text-slate-200 mb-1">
+                                                            {expanded ? '▼' : '▶'} {auditState.results.jobs.length} pending jobs
+                                                            {!expanded && auditState.results.jobs.length > 5 && ` (showing 5)`}
+                                                        </button>
+                                                        {(expanded || auditState.results.jobs.length <= 5) && (
+                                                            <div className="space-y-1 max-h-48 overflow-y-auto">
+                                                                {displayJobs.map((j, i) => (
+                                                                    <div key={i} className="bg-slate-700/30 rounded p-2 text-xs flex items-center justify-between">
+                                                                        <div className="flex-1 min-w-0">
+                                                                            <div className="font-medium text-slate-200 truncate">{j.task || j.fileName}</div>
+                                                                            <div className="text-slate-500">
+                                                                                {j.creates > 0 && <span className="text-blue-400">{j.creates} create</span>}
+                                                                                {j.resolves > 0 && <span className="text-green-400 ml-1">{j.resolves} resolve</span>}
+                                                                                <span className="text-slate-600 ml-2">[{j.odrcKeys.join(', ')}]</span>
+                                                                            </div>
+                                                                        </div>
+                                                                        <span className={`px-1.5 py-0.5 rounded text-xs ml-2 ${
+                                                                            j.state === 'new' ? 'bg-blue-900/50 text-blue-300' :
+                                                                            j.state === 'reviewed' ? 'bg-amber-900/50 text-amber-300' :
+                                                                            j.state === 'checked' ? 'bg-green-900/50 text-green-300' :
+                                                                            'bg-slate-600 text-slate-300'
+                                                                        }`}>{j.state}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
+
                                             {auditState.results.pendingImport === 0 && (
                                                 <div className="text-xs text-green-400 bg-green-900/20 rounded p-2">
-                                                    ✅ All completion jobs with ODRC data have been imported.
+                                                    ✅ All completion jobs with ODRC data have been classified.
                                                 </div>
                                             )}
                                         </div>
