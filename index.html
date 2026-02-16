@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.69.7">
+    <meta name="version" content="8.69.8">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -5566,7 +5566,8 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                 await this.request(`/repos/${owner}/${repoName}`);
                 return true;
             } catch (e) {
-                if (e.message && e.message.includes('404')) return false;
+                // request() throws "Not Found" for 404, or "GitHub API error: 404"
+                if (e.message && (e.message.includes('Not Found') || e.message.includes('404'))) return false;
                 // For non-404 errors (rate limit, auth), re-throw
                 throw e;
             }
