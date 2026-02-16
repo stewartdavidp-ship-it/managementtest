@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.70.0">
+    <meta name="version" content="8.70.1">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -6857,8 +6857,28 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         const [validating, setValidating] = React.useState(false);
         const [validated, setValidated] = React.useState(null); // null | { login, avatar }
         const [error, setError] = React.useState('');
+        const [skillsDownloaded, setSkillsDownloaded] = React.useState({}); // track which skills user has downloaded
 
-        const totalSteps = 3;
+        const totalSteps = 4;
+
+        // Skill files hosted on GitHub Pages
+        const SKILLS_BASE_URL = (() => {
+            // Derive from current page location if on GitHub Pages, otherwise use known URL
+            const loc = window.location;
+            if (loc.hostname.includes('github.io')) {
+                return `${loc.origin}${loc.pathname.replace(/\/[^/]*$/, '')}/skills`;
+            }
+            return 'https://stewartdavidp-ship-it.github.io/command-center-test/skills';
+        })();
+
+        const SKILL_FILES = [
+            { name: 'cc-odrc-framework', label: 'ODRC Framework', desc: 'Core thinking model for ideation sessions', core: true },
+            { name: 'cc-session-structure', label: 'Session Structure', desc: 'Session open/pace/close protocol', core: true },
+            { name: 'cc-artifact-manifest', label: 'Artifact Manifest', desc: 'File tracking throughout sessions', core: true },
+            { name: 'cc-post-session-package', label: 'Post-Session Package', desc: 'Required output deliverables', core: true },
+            { name: 'cc-lens-technical', label: 'Lens: Technical', desc: 'Technical domain analysis lens', core: false },
+            { name: 'cc-mode-exploration', label: 'Mode: Exploration', desc: 'Exploratory session mode', core: false },
+        ];
 
         const validateToken = async () => {
             if (!token.trim()) return;
@@ -6997,8 +7017,82 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                         </div>
                     )}
 
-                    {/* Step 3: API Keys + Done */}
+                    {/* Step 3: Claude Skills (Optional but Recommended) */}
                     {step === 3 && (
+                        <div>
+                            <h2 className="text-lg font-bold text-white mb-1">Claude Ideation Skills</h2>
+                            <p className="text-sm text-slate-400 mb-3">
+                                CC generates session briefs that reference these skills. Download and upload them to{' '}
+                                <a href="https://claude.ai/settings/capabilities" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300">
+                                    claude.ai Settings → Capabilities
+                                </a>
+                                {' '}for the best experience.
+                            </p>
+                            <div className="space-y-2 mb-4">
+                                <div className="text-xs font-medium text-slate-300 mb-1">Core Skills (recommended for all sessions)</div>
+                                {SKILL_FILES.filter(s => s.core).map(skill => (
+                                    <div key={skill.name} className="flex items-center justify-between bg-slate-700/50 rounded-lg px-3 py-2">
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-sm text-white font-medium">{skill.label}</div>
+                                            <div className="text-xs text-slate-400 truncate">{skill.desc}</div>
+                                        </div>
+                                        <a
+                                            href={`${SKILLS_BASE_URL}/${skill.name}.zip`}
+                                            download
+                                            onClick={() => setSkillsDownloaded(prev => ({ ...prev, [skill.name]: true }))}
+                                            className={`ml-3 px-3 py-1 rounded text-xs font-medium transition-colors flex-shrink-0 ${
+                                                skillsDownloaded[skill.name]
+                                                    ? 'bg-green-900/50 text-green-300 border border-green-700'
+                                                    : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                                            }`}
+                                        >
+                                            {skillsDownloaded[skill.name] ? '✓ Downloaded' : '↓ Download'}
+                                        </a>
+                                    </div>
+                                ))}
+                                <div className="text-xs font-medium text-slate-300 mt-3 mb-1">Optional Skills (per-session lens and mode)</div>
+                                {SKILL_FILES.filter(s => !s.core).map(skill => (
+                                    <div key={skill.name} className="flex items-center justify-between bg-slate-700/50 rounded-lg px-3 py-2">
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-sm text-white font-medium">{skill.label}</div>
+                                            <div className="text-xs text-slate-400 truncate">{skill.desc}</div>
+                                        </div>
+                                        <a
+                                            href={`${SKILLS_BASE_URL}/${skill.name}.zip`}
+                                            download
+                                            onClick={() => setSkillsDownloaded(prev => ({ ...prev, [skill.name]: true }))}
+                                            className={`ml-3 px-3 py-1 rounded text-xs font-medium transition-colors flex-shrink-0 ${
+                                                skillsDownloaded[skill.name]
+                                                    ? 'bg-green-900/50 text-green-300 border border-green-700'
+                                                    : 'bg-slate-600 hover:bg-slate-500 text-white'
+                                            }`}
+                                        >
+                                            {skillsDownloaded[skill.name] ? '✓ Downloaded' : '↓ Download'}
+                                        </a>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="bg-slate-700/30 rounded-lg p-3 text-xs text-slate-400 mb-4">
+                                <strong className="text-slate-300">How to upload:</strong> Download each .zip → Go to{' '}
+                                <a href="https://claude.ai/settings/capabilities" target="_blank" rel="noopener noreferrer" className="text-indigo-400">claude.ai Settings → Capabilities</a>
+                                {' '}→ Click "Add Skill" → Upload the .zip file. You can also do this later.
+                            </div>
+                            <div className="flex items-center justify-between">
+                                <button onClick={() => setStep(2)} className="px-4 py-2 rounded-lg text-slate-400 hover:text-white transition-colors">
+                                    ← Back
+                                </button>
+                                <button
+                                    onClick={() => setStep(4)}
+                                    className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-colors"
+                                >
+                                    {Object.keys(skillsDownloaded).length > 0 ? 'Next →' : 'Skip for Now →'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Step 4: API Keys + Done */}
+                    {step === 4 && (
                         <div>
                             <h2 className="text-lg font-bold text-white mb-1">API Keys (Optional)</h2>
                             <p className="text-sm text-slate-400 mb-4">
@@ -7022,12 +7116,17 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                                 <div className="text-xs text-slate-400 space-y-1 mb-4">
                                     <div>✓ Signed in as {firebaseUser?.displayName || firebaseUser?.email}</div>
                                     <div>✓ GitHub: {validated?.login || 'connected'} ({validated?.repos || '?'} repos)</div>
+                                    {Object.keys(skillsDownloaded).length > 0 ? (
+                                        <div>✓ {Object.keys(skillsDownloaded).length} skill file(s) downloaded</div>
+                                    ) : (
+                                        <div className="text-slate-500">○ Claude skills — skipped (download from Settings later)</div>
+                                    )}
                                     {anthropicKey && <div>✓ Anthropic API key configured</div>}
                                     {!anthropicKey && <div className="text-slate-500">○ Anthropic API key — skipped (add later in Settings)</div>}
                                 </div>
                             </div>
                             <div className="flex items-center justify-between mt-4">
-                                <button onClick={() => setStep(2)} className="px-4 py-2 rounded-lg text-slate-400 hover:text-white transition-colors">
+                                <button onClick={() => setStep(3)} className="px-4 py-2 rounded-lg text-slate-400 hover:text-white transition-colors">
                                     ← Back
                                 </button>
                                 <button
