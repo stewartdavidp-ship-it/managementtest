@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.70.6">
+    <meta name="version" content="8.70.7">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -5354,12 +5354,15 @@ If vague, suggest stepping back to refine the idea definition before deep explor
                 
                 if (!response.ok) {
                     const error = await response.json().catch(() => ({}));
-                    console.error('GitHub API Error:', {
-                        url,
-                        status: response.status,
-                        error,
-                        body: options.body ? JSON.parse(options.body) : null
-                    });
+                    // Suppress 404 logging for expected "not found" responses (e.g., repos without cc/completions/)
+                    if (!(response.status === 404 && options._suppress404)) {
+                        console.error('GitHub API Error:', {
+                            url,
+                            status: response.status,
+                            error,
+                            body: options.body ? JSON.parse(options.body) : null
+                        });
+                    }
                     throw new Error(error.message || `GitHub API error: ${response.status}`);
                 }
                 return response.json();
@@ -5413,7 +5416,7 @@ If vague, suggest stepping back to refine the idea definition before deep explor
             try {
                 const [owner, repoName] = repo.split('/');
                 // Add timestamp to bust GitHub API cache
-                return await this.request(`/repos/${owner}/${repoName}/contents/${path}?_=${Date.now()}`);
+                return await this.request(`/repos/${owner}/${repoName}/contents/${path}?_=${Date.now()}`, { _suppress404: true });
             } catch { return null; }
         }
         
@@ -5494,12 +5497,12 @@ If vague, suggest stepping back to refine the idea definition before deep explor
         async listRepoContents(repo, path = '') {
             try {
                 const [owner, repoName] = repo.split('/');
-                const endpoint = path 
+                const endpoint = path
                     ? `/repos/${owner}/${repoName}/contents/${path}`
                     : `/repos/${owner}/${repoName}/contents`;
                 // Add timestamp to bust any caching
                 const cacheBuster = `?_=${Date.now()}`;
-                const contents = await this.request(endpoint + cacheBuster);
+                const contents = await this.request(endpoint + cacheBuster, { _suppress404: true });
                 return Array.isArray(contents) ? contents : [contents];
             } catch { return []; }
         }
@@ -19072,7 +19075,9 @@ When complete, note: "Completes ${item.id}" in deploy notes.`;
                     const prompt = await ReviewPromptGenerator.generateBatchClassificationPrompt(selectedJobs, odrcSummary);
                     zip.file('classification-prompt.md', prompt);
                 } catch (e) {
-                    errors.push(`Classification prompt generation failed: ${e.message}`);
+                    const isKeyError = e.message?.includes('api-key') || e.message?.includes('api_key') || e.message?.includes('authentication') || e.message?.includes('401');
+                    const hint = isKeyError ? ' → Go to Settings → Anthropic API Key to update your key (get one at console.anthropic.com).' : '';
+                    errors.push(`Classification prompt generation failed: ${e.message}${hint}`);
                     zip.file('classification-prompt.md', '# Classification Prompt\n\n*Static fallback — Claude API call failed.*\n\nPlease classify each completion file in this bundle against the ODRC landscape in odrc-summary.md.');
                 }
                 setBatchModal(prev => ({ ...prev, steps: prev.steps.map(s => s.key === 'prompt' ? { ...s, status: 'done' } : s.key === 'zip' ? { ...s, status: 'active' } : s) }));
