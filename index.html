@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.70.9">
+    <meta name="version" content="8.70.10">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -7854,7 +7854,6 @@
                     {(() => {
                         const mcpDismissed = localStorage.getItem('cc_mcp_setup_done');
                         const projectDismissed = localStorage.getItem('cc_project_setup_done');
-                        const instructionsDismissed = localStorage.getItem('cc_instructions_setup_done');
                         const claudeCodeDismissed = localStorage.getItem('cc_claude_code_setup_done');
 
                         /* All hooks MUST be declared before any conditional returns (React rules of hooks) */
@@ -7864,8 +7863,9 @@
                         const [setupTokenInput, setSetupTokenInput] = React.useState('');
                         const [setupTokenTesting, setSetupTokenTesting] = React.useState(false);
                         const [setupTokenResult, setSetupTokenResult] = React.useState(null);
+                        const [instructionsCopied, setInstructionsCopied] = React.useState(false);
 
-                        const stepIds = ['auth', 'token', 'project', 'mcp', 'instructions', 'claude-code'];
+                        const stepIds = ['auth', 'token', 'project', 'mcp', 'claude-code'];
 
                         const stepDone = (id) => {
                             if (wizardTestMode) return false;
@@ -7874,7 +7874,6 @@
                                 case 'token': return !!githubToken;
                                 case 'project': return !!projectDismissed;
                                 case 'mcp': return !!mcpDismissed;
-                                case 'instructions': return !!instructionsDismissed;
                                 case 'claude-code': return !!claudeCodeDismissed;
                                 default: return false;
                             }
@@ -7886,7 +7885,6 @@
                                 case 'token': return !!githubToken;
                                 case 'project': return !!projectDismissed;
                                 case 'mcp': return !!mcpDismissed;
-                                case 'instructions': return !!instructionsDismissed;
                                 case 'claude-code': return !!claudeCodeDismissed;
                                 default: return false;
                             }
@@ -7986,9 +7984,8 @@
                                         const previewSteps = [
                                             { icon: '🔐', label: 'Sign in with Google', desc: 'Connect to the CC data store' },
                                             { icon: '🔗', label: 'Connect GitHub', desc: 'Same account you already use — nothing new to create' },
-                                            { icon: '📂', label: 'Create a Claude.ai Project', desc: 'A dedicated workspace — your other chats stay untouched' },
+                                            { icon: '📂', label: 'Create a Claude.ai Project', desc: 'A dedicated workspace with project instructions loaded' },
                                             { icon: '🧩', label: 'Add an MCP connector', desc: 'Bridges Claude Chat & Claude Code to Command Center' },
-                                            { icon: '📋', label: 'Load project instructions', desc: 'Gives Claude context about how CC works' },
                                             { icon: '💻', label: 'Connect Claude Code (optional)', desc: 'Give the CLI the same CC tools' },
                                         ];
                                         return (
@@ -8120,32 +8117,97 @@
                                         </div>
                                     )}
 
-                                    {/* ── Step 3: Create a Claude.ai Project ── */}
+                                    {/* ── Step 3: Create a Claude.ai Project + Load Instructions ── */}
                                     {currentStepId === 'project' && (
                                         <div>
                                             {progressDots}
                                             <h3 className="text-lg font-semibold mb-2">Create a Claude.ai Project</h3>
-                                            <p className="text-sm text-slate-400 mb-1 leading-relaxed">
+                                            <p className="text-sm text-slate-400 mb-4 leading-relaxed">
                                                 All CC work happens inside a dedicated Claude.ai Project. This keeps your CC conversations organized and separate from your other chats — <strong className="text-slate-300">it won't affect anything you already have in Claude</strong>.
-                                            </p>
-                                            <p className="text-xs text-slate-500 mb-5 leading-relaxed">
-                                                In Claude.ai: on the left sidebar, click <strong className="text-slate-400">Projects</strong>, then <strong className="text-slate-400">+ Create Project</strong>. Name it "Command Center" (or whatever you like).
                                             </p>
                                             {currentDone ? (
                                                 <div className="flex items-center gap-2 p-3 bg-green-900/20 border border-green-800/30 rounded-lg">
                                                     <span className="text-green-400 text-sm">✓</span>
-                                                    <span className="text-sm text-green-300">Project created</span>
+                                                    <span className="text-sm text-green-300">Project created with instructions loaded</span>
                                                 </div>
                                             ) : (
-                                                <div className="flex items-center gap-3">
-                                                    <a href="https://claude.ai/projects" target="_blank" rel="noopener"
-                                                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium no-underline text-white transition-colors">
-                                                        Open Claude.ai Projects ↗
-                                                    </a>
-                                                    <button onClick={() => { localStorage.setItem('cc_project_setup_done', 'true'); setSettings(prev => ({...prev, _projRefresh: Date.now()})); }}
-                                                        className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium text-slate-300 transition-colors">
-                                                        I've created the project ✓
-                                                    </button>
+                                                <div className="space-y-5">
+                                                    {/* Sub-step A: Copy instructions first */}
+                                                    <div className="p-4 bg-slate-800/60 border border-slate-700/50 rounded-lg">
+                                                        <div className="flex items-center gap-2 mb-2">
+                                                            <span className={`text-sm font-semibold ${instructionsCopied ? 'text-green-400' : 'text-indigo-300'}`}>
+                                                                {instructionsCopied ? '✓' : 'A.'}
+                                                            </span>
+                                                            <span className="text-sm font-medium text-slate-200">Copy project instructions to your clipboard</span>
+                                                        </div>
+                                                        <p className="text-xs text-slate-500 mb-3">You'll paste these into the project in the next step.</p>
+                                                        <button onClick={async () => {
+                                                            try {
+                                                                const uid = firebaseUser?.uid;
+                                                                if (!uid || !firebaseDb) { showAlert('Sign in first (Step 1)', '⚠️'); return; }
+                                                                const snap = await firebaseDb.ref(`command-center/${uid}/documents`).orderByChild('type').equalTo('cc-instructions').limitToLast(1).once('value');
+                                                                const docs = snap.val();
+                                                                if (!docs) { showAlert('No project instructions found in Firebase. Ask Chat to generate them.', '⚠️'); return; }
+                                                                const docId = Object.keys(docs)[0];
+                                                                const content = docs[docId].content || '';
+                                                                await navigator.clipboard.writeText(content);
+                                                                setInstructionsCopied(true);
+                                                                showAlert('Instructions copied to clipboard!', '📋');
+                                                            } catch (e) { showAlert('Copy failed: ' + e.message, '❌'); }
+                                                        }}
+                                                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                                                instructionsCopied
+                                                                    ? 'bg-green-800/40 border border-green-700/40 text-green-300'
+                                                                    : 'bg-indigo-600 hover:bg-indigo-500'
+                                                            }`}>
+                                                            {instructionsCopied ? '✓ Instructions Copied' : 'Copy Instructions to Clipboard'}
+                                                        </button>
+                                                    </div>
+
+                                                    {/* Sub-step B: Create project and paste */}
+                                                    <div className="p-4 bg-slate-800/60 border border-slate-700/50 rounded-lg">
+                                                        <div className="flex items-center gap-2 mb-2">
+                                                            <span className="text-sm font-semibold text-indigo-300">B.</span>
+                                                            <span className="text-sm font-medium text-slate-200">Create a project and paste the instructions</span>
+                                                        </div>
+                                                        <div className="space-y-2 mb-4">
+                                                            <div className="flex gap-2 text-xs text-slate-400">
+                                                                <span className="text-slate-500 shrink-0 w-4 text-right">1.</span>
+                                                                <span>In Claude.ai, click <strong className="text-slate-300">Projects</strong> in the left sidebar, then <strong className="text-slate-300">+ Create Project</strong></span>
+                                                            </div>
+                                                            <div className="flex gap-2 text-xs text-slate-400">
+                                                                <span className="text-slate-500 shrink-0 w-4 text-right">2.</span>
+                                                                <span>Name it <strong className="text-slate-300">"Command Center"</strong> (or whatever you like)</span>
+                                                            </div>
+                                                            <div className="flex gap-2 text-xs text-slate-400">
+                                                                <span className="text-slate-500 shrink-0 w-4 text-right">3.</span>
+                                                                <span>On the project page, find the <strong className="text-slate-300">Instructions</strong> section and click the <strong className="text-indigo-300">+ button</strong> next to it</span>
+                                                            </div>
+                                                            <div className="flex gap-2 text-xs text-slate-400">
+                                                                <span className="text-slate-500 shrink-0 w-4 text-right">4.</span>
+                                                                <span>Paste the instructions you copied in step A above</span>
+                                                            </div>
+                                                        </div>
+                                                        {/* Visual hint */}
+                                                        <div className="mb-4 p-3 bg-slate-900/60 border border-slate-700/30 rounded-lg">
+                                                            <p className="text-xs text-slate-500 mb-1">Look for this on the project page:</p>
+                                                            <div className="flex items-center gap-2 p-2 bg-slate-800/80 rounded border border-slate-600/30">
+                                                                <span className="text-sm text-slate-300 font-medium">Instructions</span>
+                                                                <span className="w-6 h-6 flex items-center justify-center bg-slate-700 hover:bg-slate-600 rounded border border-slate-500/50 text-slate-300 text-sm font-bold cursor-default">+</span>
+                                                                <span className="text-xs text-slate-500 ml-1">← click this to add instructions</span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-3">
+                                                            <a href="https://claude.ai/projects" target="_blank" rel="noopener"
+                                                                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium no-underline text-white transition-colors">
+                                                                Open Claude.ai Projects ↗
+                                                            </a>
+                                                            <button onClick={() => { localStorage.setItem('cc_project_setup_done', 'true'); localStorage.setItem('cc_instructions_setup_done', 'true'); setSettings(prev => ({...prev, _projRefresh: Date.now()})); }}
+                                                                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium text-slate-300 transition-colors">
+                                                                I've created the project and pasted instructions ✓
+                                                            </button>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             )}
                                             {navButtons()}
@@ -8188,54 +8250,7 @@
                                         </div>
                                     )}
 
-                                    {/* ── Step 5: Add Project Instructions ── */}
-                                    {currentStepId === 'instructions' && (
-                                        <div>
-                                            {progressDots}
-                                            <h3 className="text-lg font-semibold mb-2">Add Project Instructions</h3>
-                                            <p className="text-sm text-slate-400 mb-1 leading-relaxed">
-                                                Project instructions tell Claude how Command Center works — the vocabulary, lifecycle, and tools.
-                                                Every conversation in your project will automatically inherit these instructions.
-                                            </p>
-                                            <p className="text-xs text-slate-500 mb-5 leading-relaxed">
-                                                Copy the instructions below, then go to your Claude.ai project page. You'll see a text field labeled <strong className="text-slate-400">"Instructions"</strong> at the top of the project page (not in settings — it's right on the main page). Paste there.
-                                            </p>
-                                            {currentDone ? (
-                                                <div className="flex items-center gap-2 p-3 bg-green-900/20 border border-green-800/30 rounded-lg">
-                                                    <span className="text-green-400 text-sm">✓</span>
-                                                    <span className="text-sm text-green-300">Instructions loaded</span>
-                                                </div>
-                                            ) : (
-                                                <div className="space-y-3">
-                                                    <div className="flex items-center gap-3">
-                                                        <button onClick={async () => {
-                                                            try {
-                                                                const uid = firebaseUser?.uid;
-                                                                if (!uid || !firebaseDb) { showAlert('Sign in first (Step 1)', '⚠️'); return; }
-                                                                const snap = await firebaseDb.ref(`command-center/${uid}/documents`).orderByChild('type').equalTo('cc-instructions').limitToLast(1).once('value');
-                                                                const docs = snap.val();
-                                                                if (!docs) { showAlert('No project instructions found in Firebase. Ask Chat to generate them.', '⚠️'); return; }
-                                                                const docId = Object.keys(docs)[0];
-                                                                const content = docs[docId].content || '';
-                                                                await navigator.clipboard.writeText(content);
-                                                                showAlert('Instructions copied! Paste them into the "Instructions" field on your project page.', '📋');
-                                                            } catch (e) { showAlert('Copy failed: ' + e.message, '❌'); }
-                                                        }}
-                                                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">
-                                                            Copy Instructions to Clipboard
-                                                        </button>
-                                                        <button onClick={() => { localStorage.setItem('cc_instructions_setup_done', 'true'); setSettings(prev => ({...prev, _instrRefresh: Date.now()})); }}
-                                                            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium text-slate-300 transition-colors">
-                                                            I've pasted them ✓
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            )}
-                                            {navButtons()}
-                                        </div>
-                                    )}
-
-                                    {/* ── Step 6: Connect Claude Code (optional) ── */}
+                                    {/* ── Step 5: Connect Claude Code (optional) ── */}
                                     {currentStepId === 'claude-code' && (
                                         <div>
                                             {progressDots}
