@@ -7395,14 +7395,11 @@ The router (\\\`cc-skill-router\\\`) is the single source of truth for skill loa
                                     <li>Paste the instructions you just copied</li>
                                 </ol>
 
-                                {/* Visual hint */}
-                                <div className="mb-3 p-3 bg-slate-900/60 border border-slate-700/30 rounded-lg">
-                                    <p className="text-xs text-slate-500 mb-1">Look for this on the project page:</p>
-                                    <div className="flex items-center gap-2 p-2 bg-slate-800/80 rounded border border-slate-600/30">
-                                        <span className="text-sm text-slate-300 font-medium">Instructions</span>
-                                        <span className="w-6 h-6 flex items-center justify-center bg-slate-700 hover:bg-slate-600 rounded border border-slate-500/50 text-slate-300 text-sm font-bold cursor-default">+</span>
-                                        <span className="text-xs text-slate-500 ml-1">← click this to add instructions</span>
-                                    </div>
+                                {/* Visual hint — text only, no interactive-looking elements */}
+                                <div className="mb-3 p-2.5 bg-amber-900/15 border border-amber-700/20 rounded-lg">
+                                    <p className="text-xs text-amber-300/80">
+                                        <strong>Tip:</strong> On the project page, look for the word <strong>"Instructions"</strong> with a small <strong>+</strong> button next to it — that's where you paste.
+                                    </p>
                                 </div>
 
                                 <a href="https://claude.ai/projects" target="_blank" rel="noopener noreferrer"
