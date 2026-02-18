@@ -6951,11 +6951,37 @@ If vague, suggest stepping back to refine the idea definition before deep explor
     // =========================================================================
     function SetupWizard({ firebaseUser, onComplete }) {
         const [step, setStep] = React.useState(0); // 0 = welcome, 1-5 = wizard steps
-        const [token, setToken] = React.useState('');
-        const [tokenExpires, setTokenExpires] = React.useState('');
+        // Pre-fill token from storage if it exists (e.g. existing user in test mode)
+        const [token, setToken] = React.useState(() => {
+            try { return SecretManager.get('token') || ''; } catch { return ''; }
+        });
+        const [tokenExpires, setTokenExpires] = React.useState(() => {
+            try { return SecretManager.get('token_expires') || localStorage.getItem('cc_token_expires') || ''; } catch { return ''; }
+        });
         const [validating, setValidating] = React.useState(false);
         const [validated, setValidated] = React.useState(null);
         const [error, setError] = React.useState('');
+
+        // Auto-validate existing token on mount
+        React.useEffect(() => {
+            if (token && !validated && !validating) {
+                (async () => {
+                    setValidating(true);
+                    try {
+                        const userRes = await fetch('https://api.github.com/user', {
+                            headers: { Authorization: `token ${token}` }
+                        });
+                        const user = await userRes.json();
+                        if (user.login) {
+                            const api = new GitHubAPI(token);
+                            const repos = await api.listRepos();
+                            setValidated({ login: user.login, avatar: user.avatar_url, repos: repos.length });
+                        }
+                    } catch (e) { /* token invalid or expired — user will need to re-enter */ }
+                    setValidating(false);
+                })();
+            }
+        }, []);
         const [instructionsCopied, setInstructionsCopied] = React.useState(false);
         const [instructionsText, setInstructionsText] = React.useState('');
         const [instructionsLoading, setInstructionsLoading] = React.useState(false);
