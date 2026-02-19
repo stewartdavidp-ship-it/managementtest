@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.70.9">
+    <meta name="version" content="8.70.10">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -1277,11 +1277,13 @@
         },
         
         // Listen for all work items (returns unsubscribe function)
-        listen(uid, callback) {
+        // v8.70.10: limitToLast(200) — prevents unbounded sync of old done/deferred items
+        listen(uid, callback, limit = 200) {
             const ref = this._ref(uid);
             if (!ref) return () => {};
-            
-            ref.on('value', (snapshot) => {
+            const query = ref.orderByChild('createdAt').limitToLast(limit);
+
+            query.on('value', (snapshot) => {
                 const data = snapshot.val();
                 if (data) {
                     const list = Object.entries(data).map(([id, item]) => ({ id, ...item }));
@@ -1290,10 +1292,10 @@
                     callback([]);
                 }
             });
-            
-            return () => ref.off();
+
+            return () => query.off();
         },
-        
+
         // Get a single work item
         async get(uid, itemId) {
             const ref = this._ref(uid);
@@ -1518,12 +1520,13 @@
             return firebaseDb.ref(`${this.BASE_PATH}/${uid}/sessions`);
         },
         
-        // Listen for all sessions
-        listen(uid, callback) {
+        // v8.70.10: limitToLast(100) — sessions are large (~3KB each), bounded sync
+        listen(uid, callback, limit = 100) {
             const ref = this._ref(uid);
             if (!ref) return () => {};
-            
-            ref.on('value', (snapshot) => {
+            const query = ref.orderByChild('createdAt').limitToLast(limit);
+
+            query.on('value', (snapshot) => {
                 const data = snapshot.val();
                 if (data) {
                     const list = Object.entries(data).map(([id, s]) => ({ id, ...s }));
@@ -1532,10 +1535,10 @@
                     callback([]);
                 }
             });
-            
-            return () => ref.off();
+
+            return () => query.off();
         },
-        
+
         // Create a session record (called when Claude Prep generates a package)
         async create(uid, sessionData) {
             const ref = this._ref(uid);
@@ -1840,11 +1843,13 @@
             return firebaseDb.ref(`${this.BASE_PATH}/${uid}/dependencyAlerts`);
         },
         
-        listen(uid, callback) {
+        // v8.70.10: limitToLast(50) — alerts accumulate, never pruned
+        listen(uid, callback, limit = 50) {
             const ref = this._ref(uid);
             if (!ref) return () => {};
-            
-            ref.on('value', (snapshot) => {
+            const query = ref.orderByChild('triggeredAt').limitToLast(limit);
+
+            query.on('value', (snapshot) => {
                 const data = snapshot.val();
                 if (data) {
                     const list = Object.entries(data).map(([id, alert]) => ({ id, ...alert }));
@@ -1853,14 +1858,14 @@
                     callback([]);
                 }
             });
-            
-            return () => ref.off();
+
+            return () => query.off();
         },
-        
+
         async create(uid, data) {
             const ref = this._ref(uid);
             if (!ref) return null;
-            
+
             const alert = {
                 dependencyId: data.dependencyId,
                 interfaceId: data.interfaceId,
@@ -4115,307 +4120,13 @@ If vague, suggest stepping back to refine the idea definition before deep explor
     // Seed data — used only for initial migration into config.projects
     // Seed project definitions — ONLY used for first-time initialization.
     // After first load, config.projects is the source of truth.
-    // UI components may reference SEED_PROJECTS as a fallback safety net
-    // but it should never be reached in normal operation.
-    const SEED_PROJECTS = {
-        'gameshelf': { id: 'gameshelf', name: 'Game Shelf', icon: 'gs-logo', color: 'indigo', description: 'Daily puzzle game platform', order: 1, state: 'active' },
-        'command-center': { id: 'command-center', name: 'Command Center', icon: '🏗️', color: 'cyan', description: 'Deploy & manage apps', order: 2, state: 'active' },
-        'firebase': { id: 'firebase', name: 'Firebase Code', icon: '⚡', color: 'orange', description: 'Server-side functions & APIs', order: 3, state: 'active' },
-        'quotle-info': { id: 'quotle-info', name: 'Quotle-info', icon: '📖', color: 'rose', description: 'Quote context engine', order: 4, state: 'active' },
-        'labelkeeper': { id: 'labelkeeper', name: 'LabelKeeper', icon: '🏷️', color: 'emerald', description: 'Label printing tool', order: 5, state: 'active' },
-        'superbowl': { id: 'superbowl', name: 'Super Bowl', icon: '🏈', color: 'amber', description: 'Super Bowl squares & pools', order: 6, state: 'active' },
-        'other': { id: 'other', name: 'Other', icon: '📦', color: 'slate', description: 'Uncategorized apps', order: 99, state: 'active' }
-    };
+    // v8.70.10: Seed projects/apps emptied — each user configures their own via UI or MCP.
+    // David's project/app definitions live in Firebase under his UID, not in code.
+    // Previously these contained David's specific apps (Game Shelf, Slate, etc.) which
+    // would leak to every new user via getDefaultConfig().
+    const SEED_PROJECTS = {};
     
-    // Seed app definitions — ONLY used for first-time initialization (empty config).
-    // After first load, config.apps is the source of truth. Do NOT reference
-    // these as fallbacks in runtime code — use config.apps[appId] instead.
-    const DEFAULT_APP_DEFINITIONS = {
-        // ===== PUBLIC APPS (Test → Prod workflow) =====
-        gameshelf: {
-            id: 'gameshelf', name: 'Game Shelf', icon: 'gs-logo', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: 'sw.js', hasServiceWorker: true,
-            subPath: 'app',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['gameshelftest', 'gameshelf-test'],
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['gameshelfdata', 'game.shelf.pwa', '#setup-welcome', 'APP_VERSION']
-        },
-        beta: {
-            id: 'beta', name: 'Beta Hub', icon: '🚀', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: null, hasServiceWorker: false,
-            subPath: 'beta',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: [],  // No test for Beta Hub - uses same repo as Game Shelf
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['<title>Game Shelf Beta Hub', 'Beta Hub v\\d', 'beta-hub', 'Early Access signup']
-        },
-        slate: {
-            id: 'slate', name: 'Slate', icon: '🪨', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: 'sw.js', hasServiceWorker: true,
-            subPath: 'slate',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['slatetest', 'slate-test'],
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['<title>slate', 'slate.*daily.*word', 'chalkboard-bg', 'slate-board']
-        },
-        rungs: {
-            id: 'rungs', name: 'Rungs', icon: '🪜', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: 'sw.js', hasServiceWorker: true,
-            subPath: 'rungs',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['rungstest', 'rungs-test'],
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['<title>rungs', 'rungs.*daily', 'word-ladder', 'rung-container']
-        },
-        quotle: {
-            id: 'quotle', name: 'Quotle', icon: '💬', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: 'sw.js', hasServiceWorker: true,
-            subPath: 'quotle',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['quotletest', 'quotle-test'],
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['<title>quotle', 'quotle.*daily.*quote', 'quotes-database']
-        },
-        wordboxing: {
-            id: 'wordboxing', name: 'Word Boxing', icon: '🥊', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: 'sw.js', hasServiceWorker: true,
-            subPath: 'wordboxing',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['wordboxingtest', 'wordboxing-test'],
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['<title>word\\s*boxing', 'word-boxing', 'boxing-ring']
-        },
-        landing: {
-            id: 'landing', name: 'Landing Page', icon: '📣', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',  // Root of gameshelf repo
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['gameshelftest'],
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['Track Every Daily Puzzle', 'track.*every.*daily.*puzzle', 'Join the Beta', 'cta-button']
-        },
-        terms: {
-            id: 'terms', name: 'Terms of Service', icon: '📋', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: 'terms',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['gameshelftest'],
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['gameshelf-terms', '<title>Terms of Service', 'Terms of Service.*Game Shelf']
-        },
-        privacy: {
-            id: 'privacy', name: 'Privacy Policy', icon: '🔒', project: 'gameshelf',
-            appType: 'public',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: 'privacy',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['gameshelftest'],
-                prod: ['gameshelf']
-            },
-            detectionPatterns: ['gameshelf-privacy', '<title>Privacy Policy', 'Privacy Policy.*Game Shelf']
-        },
-        
-        // ===== INTERNAL TOOLS (Prod only) =====
-        testplan: {
-            id: 'testplan', name: 'Test Plan', icon: '🧪', project: 'gameshelf',
-            appType: 'internal',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            repos: { prod: '' },
-            versions: { prod: '' },
-            repoPatterns: {
-                prod: ['gameshelf-testplan']
-            },
-            detectionPatterns: ['<title>.*test\\s*plan', 'playwright.*runner', 'test-plan-app']
-        },
-        'command-center': {
-            id: 'command-center', name: 'Command Center', icon: '🏗️', project: 'command-center',
-            appType: 'public',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['command-center-test'],
-                prod: ['command-center']
-            },
-            detectionPatterns: ['<title>.*command\\s*center', '<title>.*ship\\s*it', 'command-center', 'claude.*deploy.*queue']
-        },
-        'cc-infrastructure': {
-            id: 'cc-infrastructure', name: 'CC Infrastructure', icon: '🔧', project: 'command-center',
-            appType: 'internal',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: 'infrastructure',
-            repos: { prod: '' },
-            versions: { prod: '' },
-            repoPatterns: {
-                prod: ['command-center']
-            },
-            detectionPatterns: ['<title>.*infrastructure.*command', 'cc-infrastructure', 'Infrastructure Satellite']
-        },
-        'cc-quality': {
-            id: 'cc-quality', name: 'CC Quality', icon: '✅', project: 'command-center',
-            appType: 'internal',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: 'quality',
-            repos: { prod: '' },
-            versions: { prod: '' },
-            repoPatterns: {
-                prod: ['command-center']
-            },
-            detectionPatterns: ['<title>.*quality.*command', 'cc-quality', 'Quality Satellite']
-        },
-        'cc-analytics': {
-            id: 'cc-analytics', name: 'CC Analytics', icon: '📊', project: 'command-center',
-            appType: 'internal',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: 'analytics',
-            repos: { prod: '' },
-            versions: { prod: '' },
-            repoPatterns: {
-                prod: ['command-center']
-            },
-            detectionPatterns: ['<title>.*analytics.*command', 'cc-analytics', 'Analytics Satellite']
-        },
-        'firebase-functions': {
-            id: 'firebase-functions', name: 'Firebase Functions', icon: '⚡', project: 'firebase',
-            appType: 'internal',
-            targetPath: 'functions/index.js', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            deployType: 'github-actions',
-            repos: { prod: '' },
-            versions: { prod: '' },
-            repoPatterns: {
-                prod: ['gameshelf-functions']
-            },
-            detectionPatterns: ['firebase-functions', 'onRequest', 'onCall', 'getHint', 'ANTHROPIC_API_KEY']
-        },
-        
-        // ===== OTHER PROJECTS (Collapsed by default) =====
-        'quotle-info': {
-            id: 'quotle-info', name: 'Quotle-info', icon: '📖', project: 'quotle-info',
-            appType: 'other',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            repos: { prod: '' },
-            versions: { prod: '' },
-            repoPatterns: {
-                prod: ['quote-info']
-            },
-            detectionPatterns: ['quotle.info', 'Quote Context Engine', 'quotle-info/quotes']
-        },
-        'quotle-info-admin': {
-            id: 'quotle-info-admin', name: 'Quotle-info Admin', icon: '📖🔧', project: 'quotle-info',
-            appType: 'other',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: 'admin',
-            repos: { prod: '' },
-            versions: { prod: '' },
-            repoPatterns: {
-                prod: ['quote-info']
-            },
-            detectionPatterns: ['Database Manager', 'quotle-info.*manager', 'Enrichment Queue']
-        },
-        'sb-squares': {
-            id: 'sb-squares', name: 'SB Squares', icon: '🏈', project: 'superbowl',
-            appType: 'other',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            repos: { prod: '' },
-            versions: { prod: '' },
-            repoPatterns: {
-                prod: ['sb-squares-lx', 'superbowl']
-            },
-            detectionPatterns: ['sb-squares', 'super.*bowl.*squares', 'football.*pool']
-        },
-        'labelkeeper': {
-            id: 'labelkeeper', name: 'LabelKeeper', icon: '🏷️', project: 'labelkeeper',
-            appType: 'public',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['labelkeepertest'],
-                prod: ['labelkeeper']
-            },
-            detectionPatterns: ['labelkeeper', 'label.keeper']
-        },
-        'teacher-assist': {
-            id: 'teacher-assist', name: 'Teacher Assist', icon: '👩‍🏫', project: 'other',
-            appType: 'other',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['teacher-assist-test'],
-                prod: ['teacher-assist']
-            },
-            detectionPatterns: ['teacher.assist', 'teacher-assist']
-        },
-        'daily-shelf': {
-            id: 'daily-shelf', name: 'Daily Shelf', icon: '📅', project: 'other',
-            appType: 'other',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['daily-shelf-test'],
-                prod: ['daily-shelf']
-            },
-            detectionPatterns: ['daily.shelf', 'daily-shelf']
-        },
-        'ui-prototypes': {
-            id: 'ui-prototypes', name: 'UI Prototypes', icon: '🎨', project: 'other',
-            appType: 'other',
-            targetPath: 'index.html', swPath: '', hasServiceWorker: false,
-            subPath: '',
-            repos: { test: '', prod: '' },
-            versions: { test: '', prod: '' },
-            repoPatterns: {
-                test: ['gameshelf-ui-test'],
-                prod: ['gameshelf-ui']
-            },
-            detectionPatterns: ['ui.prototype', 'gameshelf-ui']
-        }
-    };
+    const DEFAULT_APP_DEFINITIONS = {};
     
     // Machine-readable seed manifest for config ↔ code drift detection.
     // When CC deploys itself, this is parsed from the staged HTML and compared
@@ -6600,14 +6311,16 @@ If vague, suggest stepping back to refine the idea definition before deep explor
             console.log('[CC] CompletionFileService.updateCheckOutcome:', jobId, outcome);
         },
 
-        listen(uid, callback) {
+        // v8.70.10: limitToLast(50) — completion jobs carry file/commit arrays (~2KB each)
+        listen(uid, callback, limit = 50) {
             const ref = this._ref(uid);
+            const query = ref.orderByChild('detectedAt').limitToLast(limit);
             const handler = (snapshot) => {
                 const data = snapshot.val() || {};
                 callback(Object.values(data).sort((a, b) => (b.detectedAt || '').localeCompare(a.detectedAt || '')));
             };
-            ref.on('value', handler);
-            return () => ref.off('value', handler);
+            query.on('value', handler);
+            return () => query.off('value', handler);
         }
     };
 
@@ -8272,25 +7985,40 @@ The router (\\\`cc-skill-router\\\`) is the single source of truth for skill loa
                     
                     console.log('[ConfigSync] Startup overlay complete');
                 } else {
-                    // Firebase is empty — first run, seed it with local data
-                    console.log('[ConfigSync] Firebase empty, seeding with local data...');
-                    const localConfig = ConfigManager.load();
-                    const localDeployments = DeployService.load();
-                    const localRulesHistory = (() => { try { return JSON.parse(localStorage.getItem('cc_rulesHistory') || '[]'); } catch { return []; } })();
-                    const localSessionLog = SessionLogService.load();
-                    const localDeletionHistory = (() => { try { return JSON.parse(localStorage.getItem('cc_deletion_history') || '[]'); } catch { return []; } })();
-                    const localRollbackSnapshots = RollbackService.load();
-                    
+                    // v8.70.10: Firebase is empty — new user. Seed with clean defaults, NOT localStorage.
+                    // localStorage may contain another user's cached data from a previous session on
+                    // this browser/device. Using it would leak that user's projects/deploy-history/etc.
+                    console.log('[ConfigSync] Firebase empty for this user, seeding with defaults...');
+                    const freshConfig = ConfigManager.getDefaultConfig();
+                    freshConfig._updatedAt = Date.now();
+                    freshConfig._updatedBy = 'seed';
+
+                    // Clear potentially stale localStorage from a different user's session
+                    try {
+                        localStorage.removeItem(ConfigManager.STORAGE_KEY);
+                        localStorage.removeItem('gs_config');
+                        localStorage.removeItem('cc_history_v2');
+                        localStorage.removeItem('cc_rulesHistory');
+                        localStorage.removeItem('cc_session_log');
+                        localStorage.removeItem('cc_deletion_history');
+                        localStorage.removeItem('cc_rollback_snapshots');
+                    } catch {}
+
                     await FirebaseConfigSync.pushAll({
-                        config: localConfig,
-                        deployHistory: localDeployments,
-                        rulesHistory: localRulesHistory,
-                        sessionLog: localSessionLog,
-                        deletionHistory: localDeletionHistory,
-                        rollbackSnapshots: localRollbackSnapshots
+                        config: freshConfig,
+                        deployHistory: [],
+                        rulesHistory: [],
+                        sessionLog: { currentSession: null, sessions: [], issues: [], notes: '' },
+                        deletionHistory: [],
+                        rollbackSnapshots: {}
                     });
-                    
-                    console.log('[ConfigSync] Initial seed complete');
+
+                    // Update React state with fresh config
+                    try { localStorage.setItem(ConfigManager.STORAGE_KEY, JSON.stringify(freshConfig)); } catch {}
+                    setConfig(freshConfig);
+                    setApps(ConfigManager.toLegacyAppsFormat(freshConfig));
+
+                    console.log('[ConfigSync] New user seed complete');
                 }
                 
                 setSyncInitialized(true);
