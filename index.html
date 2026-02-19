@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.70.8">
+    <meta name="version" content="8.70.9">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -386,33 +386,15 @@
             return this.db.ref(`${this.BASE_PATH}/${this.uid}/${dataKey}`);
         },
 
-        // v8.70.0: One-time migration from global paths to UID-scoped paths
+        // v8.70.0→v8.70.9: Migration from global paths to UID-scoped paths.
+        // DISABLED in v8.70.9 — the shared path `command-center/config` contains
+        // the original user's data. New users who log in for the first time would
+        // have that data copied into their own UID path, leaking another user's
+        // projects, deploy history, etc. The migration already ran for the original
+        // user; new users must start fresh.
         async migrateFromGlobal() {
-            if (!this.db || !this.uid) return false;
-            try {
-                const uidRef = this.db.ref(`${this.BASE_PATH}/${this.uid}/config`);
-                const snap = await uidRef.once('value');
-                if (snap.exists()) return false; // Already migrated
-
-                const legacyRef = this.db.ref(`${this.BASE_PATH}/config`);
-                const legacySnap = await legacyRef.once('value');
-                if (!legacySnap.exists()) return false; // No legacy data to migrate
-
-                // Copy all data keys from global to UID-scoped
-                for (const dataKey of Object.keys(this.DATA_KEYS)) {
-                    const src = this.db.ref(`${this.BASE_PATH}/${dataKey}`);
-                    const srcSnap = await src.once('value');
-                    if (srcSnap.exists()) {
-                        const destRef = this._ref(dataKey);
-                        if (destRef) await destRef.set(srcSnap.val());
-                    }
-                }
-                console.log('[ConfigSync] ✅ Migrated legacy global data to UID-scoped path');
-                return true;
-            } catch (e) {
-                console.error('[ConfigSync] Migration failed:', e);
-                return false;
-            }
+            // No-op. New users get an empty config and can set up their own apps.
+            return false;
         },
 
         // Data key → localStorage key mapping
