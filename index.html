@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Command Center</title>
-    <meta name="version" content="8.71.0">
+    <meta name="version" content="8.71.1">
     <meta name="gs-app-id" content="command-center">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -16086,7 +16086,7 @@ The developer uses Claude for iterative development — each session should:
                 </div>
 
                 {/* ═══ DEPLOY MANAGEMENT SECTION ═══ */}
-                {settingsSection === 'deploy' && (<>
+                <div style={{ display: settingsSection === 'deploy' ? 'contents' : 'none' }}>
                 {/* Your Name (v8.37.0) */}
                 <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
                     <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
@@ -16560,46 +16560,19 @@ The developer uses Claude for iterative development — each session should:
                         </div>
                     )}
                 </div>
-                </>)}
+                </div>
 
                 {/* ═══ INFRASTRUCTURE SECTION ═══ */}
-                {settingsSection === 'infrastructure' && (
+                <div style={{ display: settingsSection === 'infrastructure' ? 'block' : 'none' }}>
                 <div className="space-y-6">
-                <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
-                    <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                        📋 Firebase Rules Manager
-                    </h2>
-                    <p className="text-sm text-slate-400 mb-4">
-                        View, edit, and deploy Firebase Realtime Database security rules. Includes snapshot history with diff view.
-                    </p>
                     <FirebaseRulesManager showAlert={showAlert} showConfirm={showConfirm} />
-                </div>
-
-                <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
-                    <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                        🌐 Domain Management
-                    </h2>
-                    <p className="text-sm text-slate-400 mb-4">
-                        Manage DNS records for Porkbun and GoDaddy domains. Wire domains for GitHub Pages with one click.
-                    </p>
                     <DomainsView apps={apps} config={config} githubToken={token} showAlert={showAlert} showConfirm={showConfirm} />
-                </div>
-
-                <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
-                    <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                        🔐 Firebase Auth Domains
-                    </h2>
-                    <p className="text-sm text-slate-400 mb-4">
-                        Manage authorized domains for Firebase Authentication. Required for OAuth and sign-in flows.
-                    </p>
                     <AuthorizedDomainsManager showAlert={showAlert} />
                 </div>
                 </div>
-                )}
 
                 {/* ═══ CREDENTIALS SECTION ═══ */}
-                {settingsSection === 'credentials' && (
-                <div className="space-y-6">
+                <div className="space-y-6" style={{ display: settingsSection === 'credentials' ? 'flex' : 'none', flexDirection: 'column', gap: '1.5rem' }}>
                 {/* GitHub Token */}
                 <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
                     <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
@@ -16771,7 +16744,6 @@ The developer uses Claude for iterative development — each session should:
                     return <CredCard key={provider.id} />;
                 })}
                 </div>
-                )}
             </div>
         );
     }
