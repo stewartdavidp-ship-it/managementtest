@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Grocery App</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<style>
+  :root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16213e;
+    --bg-card: #0f3460;
+    --bg-input: #1a1a3e;
+    --text-primary: #e8e8e8;
+    --text-secondary: #a0a0b8;
+    --text-muted: #6c6c80;
+    --accent-green: #4ade80;
+    --accent-blue: #60a5fa;
+    --accent-orange: #fb923c;
+    --accent-pink: #f472b6;
+    --accent-yellow: #facc15;
+    --accent-purple: #a78bfa;
+    --accent-red: #f87171;
+    --accent-teal: #2dd4bf;
+    --accent-cyan: #22d3ee;
+    --border: #2a2a4e;
+    --checked: #3a3a5e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .app-container { max-width: 480px; margin: 0 auto; padding: 16px; padding-bottom: 100px; }
+  .app-header {
+    text-align: center;
+    padding: 20px 0 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .app-header h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+  .app-header .store-name { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+  .budget-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+  }
+  .budget-bar .label { color: var(--text-secondary); font-size: 13px; }
+  .budget-bar .total { font-size: 24px; font-weight: 700; color: var(--accent-green); }
+  .budget-bar .item-count { color: var(--text-muted); font-size: 12px; }
+  .input-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg-primary);
+    padding: 8px 0;
+  }
+  .input-row input[type="text"] {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    color: var(--text-primary);
+    font-size: 16px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .input-row input[type="text"]:focus { border-color: var(--accent-blue); }
+  .input-row input[type="text"]::placeholder { color: var(--text-muted); }
+  .add-btn {
+    background: var(--accent-blue);
+    border: none;
+    border-radius: 12px;
+    padding: 14px 20px;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: opacity 0.2s;
+  }
+  .add-btn:active { opacity: 0.8; }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    padding: 4px;
+  }
+  .tab {
+    flex: 1;
+    padding: 10px;
+    text-align: center;
+    border-radius: 10px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .tab.active { background: var(--bg-card); color: var(--text-primary); }
+  .dept-section { margin-bottom: 12px; }
+  .dept-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.2s;
+    user-select: none;
+  }
+  .dept-header:hover { background: var(--bg-secondary); }
+  .dept-header .dept-icon { font-size: 18px; }
+  .dept-header .dept-name { font-weight: 600; font-size: 14px; flex: 1; }
+  .dept-header .dept-count {
+    background: var(--bg-secondary);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .dept-header .chevron {
+    color: var(--text-muted);
+    font-size: 12px;
+    transition: transform 0.2s;
+  }
+  .dept-header .chevron.collapsed { transform: rotate(-90deg); }
+  .item-list { padding: 0 8px; }
+  .item-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 8px;
+    border-bottom: 1px solid var(--border);
+    transition: opacity 0.2s;
+  }
+  .item-row.checked { opacity: 0.5; }
+  .item-row.checked .item-name { text-decoration: line-through; color: var(--text-muted); }
+  .check-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border: 2px solid var(--border);
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.2s;
+    color: transparent;
+    font-size: 14px;
+  }
+  .check-btn.checked {
+    background: var(--accent-green);
+    border-color: var(--accent-green);
+    color: #fff;
+  }
+  .item-name { flex: 1; font-size: 15px; }
+  .price-input {
+    width: 70px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 8px;
+    color: var(--accent-green);
+    font-size: 13px;
+    text-align: right;
+    outline: none;
+  }
+  .price-input::placeholder { color: var(--text-muted); }
+  .star-btn {
+    background: none;
+    border: none;
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px;
+    transition: transform 0.2s;
+  }
+  .star-btn:active { transform: scale(1.3); }
+  .delete-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px;
+    transition: color 0.2s;
+  }
+  .delete-btn:hover { color: var(--accent-red); }
+  .favorites-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .favorites-panel h3 { font-size: 14px; color: var(--text-secondary); margin-bottom: 12px; }
+  .fav-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .fav-chip {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 8px 14px;
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .fav-chip:active { background: var(--accent-blue); border-color: var(--accent-blue); }
+  .fav-chip .fav-price { color: var(--accent-green); font-size: 11px; }
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+  }
+  .empty-state .emoji { font-size: 48px; margin-bottom: 12px; }
+  .empty-state p { font-size: 15px; line-height: 1.5; }
+  .clear-checked-btn {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    margin-top: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .clear-checked-btn:hover { border-color: var(--accent-red); color: var(--accent-red); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const e = React.createElement;
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+// ═══════════════════════════════════════════════════════════════
+// Department Taxonomy — Instacart-derived, simplified for Whole Foods
+// Ordered by perimeter-first walk pattern
+// ═══════════════════════════════════════════════════════════════
+const DEPARTMENTS = [
+  { id: 'produce', name: 'Produce', icon: '🥬', color: '#4ade80', keywords: ['apple','banana','orange','lemon','lime','avocado','tomato','potato','onion','garlic','lettuce','spinach','kale','broccoli','carrot','celery','pepper','cucumber','zucchini','mushroom','corn','berry','berries','strawberry','blueberry','grape','mango','pineapple','watermelon','peach','pear','plum','ginger','herb','basil','cilantro','parsley','mint','arugula','cabbage','radish','beet','squash','sweet potato','asparagus','artichoke','green bean','pea','fruit','vegetable','salad'] },
+  { id: 'deli', name: 'Deli', icon: '🥖', color: '#fb923c', keywords: ['deli','hummus','olive','salami','prosciutto','turkey breast','roast beef','ham slice','pita','wrap','sub','sandwich'] },
+  { id: 'prepared', name: 'Prepared Foods', icon: '🍱', color: '#f472b6', keywords: ['prepared','rotisserie','sushi','soup','meal kit','ready to eat','pre-made','takeout'] },
+  { id: 'bakery', name: 'Bakery', icon: '🍞', color: '#facc15', keywords: ['bread','bagel','croissant','muffin','cake','cookie','pie','roll','baguette','tortilla','pita bread','naan','donut','pastry','scone'] },
+  { id: 'meat', name: 'Meat & Seafood', icon: '🥩', color: '#f87171', keywords: ['chicken','beef','pork','steak','ground','sausage','bacon','salmon','shrimp','fish','tuna','cod','tilapia','lamb','turkey','ribs','brisket','filet','lobster','crab','scallop','mussel','clam'] },
+  { id: 'dairy', name: 'Dairy', icon: '🥛', color: '#60a5fa', keywords: ['milk','yogurt','butter','cream','egg','eggs','sour cream','cottage cheese','cream cheese','half and half','whipped cream','oat milk','almond milk','creamer'] },
+  { id: 'cheese', name: 'Cheese', icon: '🧀', color: '#fbbf24', keywords: ['cheese','cheddar','mozzarella','parmesan','brie','gouda','feta','goat cheese','swiss','provolone','gruyere','ricotta','blue cheese','manchego'] },
+  { id: 'pantry', name: 'Pantry', icon: '🫙', color: '#a78bfa', keywords: ['pasta','rice','flour','sugar','oil','olive oil','vinegar','sauce','soy sauce','ketchup','mustard','mayo','mayonnaise','cereal','oatmeal','granola','honey','maple syrup','peanut butter','jam','jelly','spice','salt','pepper','cinnamon','cumin','paprika','curry','stock','broth','coconut milk','noodle'] },
+  { id: 'canned', name: 'Canned Goods', icon: '🥫', color: '#fb7185', keywords: ['canned','can of','beans','chickpea','lentil','tomato sauce','tomato paste','diced tomato','tuna can','soup can','coconut cream'] },
+  { id: 'snacks', name: 'Snacks', icon: '🍿', color: '#c084fc', keywords: ['chip','chips','cracker','pretzel','popcorn','nut','nuts','almond','cashew','trail mix','granola bar','protein bar','dried fruit','jerky','snack'] },
+  { id: 'beverages', name: 'Beverages', icon: '🥤', color: '#22d3ee', keywords: ['water','juice','soda','coffee','tea','kombucha','sparkling','seltzer','lemonade','coconut water','energy drink','smoothie'] },
+  { id: 'bulk', name: 'Bulk', icon: '🌾', color: '#86efac', keywords: ['bulk','quinoa bulk','oats bulk','chia','flaxseed','hemp','nutritional yeast'] },
+  { id: 'frozen', name: 'Frozen', icon: '🧊', color: '#7dd3fc', keywords: ['frozen','ice cream','pizza frozen','fries','frozen fruit','frozen vegetable','popsicle','sorbet','gelato','frozen dinner','waffle'] },
+  { id: 'beer_wine', name: 'Beer, Wine & Spirits', icon: '🍷', color: '#e879f9', keywords: ['beer','wine','spirit','vodka','whiskey','tequila','rum','gin','champagne','prosecco','hard seltzer','cider'] },
+  { id: 'supplements', name: 'Supplements & Vitamins', icon: '💊', color: '#34d399', keywords: ['vitamin','supplement','probiotic','fish oil','collagen','protein powder','multivitamin','magnesium','zinc','iron','b12','omega'] },
+  { id: 'personal_care', name: 'Personal Care', icon: '🧴', color: '#f9a8d4', keywords: ['shampoo','conditioner','soap','body wash','lotion','deodorant','toothpaste','toothbrush','floss','razor','sunscreen','lip balm','face wash'] },
+  { id: 'household', name: 'Household', icon: '🧹', color: '#93c5fd', keywords: ['paper towel','toilet paper','trash bag','dish soap','sponge','cleaning','detergent','laundry','aluminum foil','plastic wrap','ziplock','bag','wipe','bleach','candle'] },
+  { id: 'baby', name: 'Baby', icon: '👶', color: '#fca5a5', keywords: ['diaper','baby food','formula','baby wipe','baby wash','pacifier','bottle'] },
+  { id: 'pet', name: 'Pet', icon: '🐾', color: '#fdba74', keywords: ['dog food','cat food','pet','treat','kibble','litter','cat litter','pet toy'] },
+  { id: 'floral', name: 'Floral', icon: '💐', color: '#f0abfc', keywords: ['flower','bouquet','plant','roses','tulip','sunflower','orchid','succulent'] }
+];
+
+// ═══════════════════════════════════════════════════════════════
+// Categorization — keyword matching
+// ═══════════════════════════════════════════════════════════════
+function categorizeItem(name) {
+  const lower = name.toLowerCase().trim();
+  let bestMatch = null;
+  let bestLen = 0;
+  for (const dept of DEPARTMENTS) {
+    for (const kw of dept.keywords) {
+      if (lower.includes(kw) && kw.length > bestLen) {
+        bestMatch = dept.id;
+        bestLen = kw.length;
+      }
+    }
+  }
+  return bestMatch || 'pantry'; // default fallback
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Local Storage helpers
+// ═══════════════════════════════════════════════════════════════
+const STORAGE_KEY = 'my-grocery-app';
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return { items: [], favorites: [], prices: {} };
+}
+function saveState(state) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// App Component
+// ═══════════════════════════════════════════════════════════════
+function App() {
+  const [items, setItems] = useState([]);
+  const [favorites, setFavorites] = useState([]);
+  const [prices, setPrices] = useState({});
+  const [inputVal, setInputVal] = useState('');
+  const [activeTab, setActiveTab] = useState('list');
+  const [collapsedDepts, setCollapsedDepts] = useState({});
+  const inputRef = useRef(null);
+  const nextId = useRef(1);
+
+  // Load state on mount
+  useEffect(() => {
+    const saved = loadState();
+    setItems(saved.items || []);
+    setFavorites(saved.favorites || []);
+    setPrices(saved.prices || {});
+    nextId.current = (saved.items || []).reduce((max, it) => Math.max(max, it.id + 1), 1);
+  }, []);
+
+  // Save state on change
+  useEffect(() => {
+    saveState({ items, favorites, prices });
+  }, [items, favorites, prices]);
+
+  const addItem = useCallback((name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const dept = categorizeItem(trimmed);
+    const newItem = {
+      id: nextId.current++,
+      name: trimmed,
+      dept,
+      checked: false,
+      price: prices[trimmed.toLowerCase()] || ''
+    };
+    setItems(prev => [...prev, newItem]);
+    setInputVal('');
+    inputRef.current?.focus();
+  }, [prices]);
+
+  const toggleCheck = useCallback((id) => {
+    setItems(prev => prev.map(it => it.id === id ? { ...it, checked: !it.checked } : it));
+  }, []);
+
+  const deleteItem = useCallback((id) => {
+    setItems(prev => prev.filter(it => it.id !== id));
+  }, []);
+
+  const updatePrice = useCallback((id, price) => {
+    setItems(prev => prev.map(it => it.id === id ? { ...it, price } : it));
+    // Remember price by item name
+    setItems(prev => {
+      const item = prev.find(it => it.id === id);
+      if (item && price) {
+        setPrices(p => ({ ...p, [item.name.toLowerCase()]: price }));
+      }
+      return prev;
+    });
+  }, []);
+
+  const toggleFavorite = useCallback((name) => {
+    setFavorites(prev => {
+      if (prev.includes(name.toLowerCase())) {
+        return prev.filter(f => f !== name.toLowerCase());
+      }
+      return [...prev, name.toLowerCase()];
+    });
+  }, []);
+
+  const isFavorite = useCallback((name) => {
+    return favorites.includes(name.toLowerCase());
+  }, [favorites]);
+
+  const addFromFavorite = useCallback((name) => {
+    addItem(name);
+  }, [addItem]);
+
+  const clearChecked = useCallback(() => {
+    setItems(prev => prev.filter(it => !it.checked));
+  }, []);
+
+  // Group items by department, maintain walk order
+  const groupedItems = useMemo(() => {
+    const groups = {};
+    for (const dept of DEPARTMENTS) {
+      const deptItems = items.filter(it => it.dept === dept.id);
+      if (deptItems.length > 0) {
+        // Unchecked first, then checked
+        const unchecked = deptItems.filter(it => !it.checked);
+        const checked = deptItems.filter(it => it.checked);
+        groups[dept.id] = { dept, items: [...unchecked, ...checked] };
+      }
+    }
+    return groups;
+  }, [items]);
+
+  const totalItems = items.length;
+  const checkedItems = items.filter(it => it.checked).length;
+  const totalBudget = items.reduce((sum, it) => {
+    const p = parseFloat(it.price);
+    return sum + (isNaN(p) ? 0 : p);
+  }, 0);
+
+  const toggleDept = useCallback((deptId) => {
+    setCollapsedDepts(prev => ({ ...prev, [deptId]: !prev[deptId] }));
+  }, []);
+
+  const handleKeyDown = useCallback((ev) => {
+    if (ev.key === 'Enter') addItem(inputVal);
+  }, [inputVal, addItem]);
+
+  // ─── Render ───
+  return e('div', { className: 'app-container' },
+    // Header
+    e('div', { className: 'app-header' },
+      e('h1', null, '🛒 My Grocery App'),
+      e('div', { className: 'store-name' }, 'Optimized for Whole Foods · Perimeter-first route')
+    ),
+
+    // Budget bar
+    e('div', { className: 'budget-bar' },
+      e('div', null,
+        e('div', { className: 'label' }, 'Trip Estimate'),
+        e('div', { className: 'item-count' },
+          checkedItems + '/' + totalItems + ' items checked'
+        )
+      ),
+      e('div', { className: 'total' }, '$' + totalBudget.toFixed(2))
+    ),
+
+    // Input row
+    e('div', { className: 'input-row' },
+      e('input', {
+        ref: inputRef,
+        type: 'text',
+        placeholder: 'Add an item...',
+        value: inputVal,
+        onChange: ev => setInputVal(ev.target.value),
+        onKeyDown: handleKeyDown
+      }),
+      e('button', { className: 'add-btn', onClick: () => addItem(inputVal) }, 'Add')
+    ),
+
+    // Tabs
+    e('div', { className: 'tabs' },
+      e('button', {
+        className: 'tab' + (activeTab === 'list' ? ' active' : ''),
+        onClick: () => setActiveTab('list')
+      }, '📋 List'),
+      e('button', {
+        className: 'tab' + (activeTab === 'favorites' ? ' active' : ''),
+        onClick: () => setActiveTab('favorites')
+      }, '⭐ Favorites (' + favorites.length + ')')
+    ),
+
+    // Favorites panel
+    activeTab === 'favorites' && e('div', { className: 'favorites-panel' },
+      e('h3', null, 'Tap to add to your list'),
+      favorites.length === 0
+        ? e('div', { className: 'empty-state', style: { padding: '20px' } },
+            e('p', null, 'Star items on your list to save them as favorites'))
+        : e('div', { className: 'fav-chips' },
+            favorites.map(fav =>
+              e('button', {
+                key: fav,
+                className: 'fav-chip',
+                onClick: () => addFromFavorite(fav)
+              },
+                '+ ' + fav.charAt(0).toUpperCase() + fav.slice(1),
+                prices[fav] ? e('span', { className: 'fav-price' }, ' $' + prices[fav]) : null
+              )
+            )
+          )
+    ),
+
+    // List view
+    activeTab === 'list' && (
+      totalItems === 0
+        ? e('div', { className: 'empty-state' },
+            e('div', { className: 'emoji' }, '🛒'),
+            e('p', null, 'Your list is empty!', e('br'), 'Add items above to get started.')
+          )
+        : e('div', null,
+            Object.values(groupedItems).map(({ dept, items: deptItems }) =>
+              e('div', { key: dept.id, className: 'dept-section' },
+                e('div', {
+                  className: 'dept-header',
+                  onClick: () => toggleDept(dept.id),
+                  style: { borderLeft: '3px solid ' + dept.color }
+                },
+                  e('span', { className: 'dept-icon' }, dept.icon),
+                  e('span', { className: 'dept-name', style: { color: dept.color } }, dept.name),
+                  e('span', { className: 'dept-count' }, deptItems.length),
+                  e('span', { className: 'chevron' + (collapsedDepts[dept.id] ? ' collapsed' : '') }, '▼')
+                ),
+                !collapsedDepts[dept.id] && e('div', { className: 'item-list' },
+                  deptItems.map(item =>
+                    e('div', { key: item.id, className: 'item-row' + (item.checked ? ' checked' : '') },
+                      e('button', {
+                        className: 'check-btn' + (item.checked ? ' checked' : ''),
+                        onClick: () => toggleCheck(item.id)
+                      }, item.checked ? '✓' : ''),
+                      e('span', { className: 'item-name' }, item.name),
+                      e('input', {
+                        className: 'price-input',
+                        type: 'text',
+                        placeholder: '$0.00',
+                        value: item.price,
+                        onChange: ev => updatePrice(item.id, ev.target.value),
+                        onClick: ev => ev.stopPropagation()
+                      }),
+                      e('button', {
+                        className: 'star-btn',
+                        onClick: () => toggleFavorite(item.name)
+                      }, isFavorite(item.name) ? '⭐' : '☆'),
+                      e('button', {
+                        className: 'delete-btn',
+                        onClick: () => deleteItem(item.id)
+                      }, '✕')
+                    )
+                  )
+                )
+              )
+            ),
+            checkedItems > 0 && e('button', {
+              className: 'clear-checked-btn',
+              onClick: clearChecked
+            }, 'Clear ' + checkedItems + ' checked item' + (checkedItems > 1 ? 's' : ''))
+          )
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Mount
+// ═══════════════════════════════════════════════════════════════
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(e(App));
+</script>
+</body>
+</html>
