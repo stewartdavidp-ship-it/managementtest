@@ -1,8 +1,8 @@
 # Command Center — Architecture
 
-> **Last updated:** 2026-02-27 (v8.75.0)
+> **Last updated:** 2026-02-28 (v8.79.0)
 >
-> **Companion document:** For MCP server architecture, see `mcp-server/architecture/SYSTEM-CONTEXT.md` (Rev 27).
+> **Companion document:** For MCP server architecture, see `mcp-server/architecture/SYSTEM-CONTEXT.md` (Rev 29).
 
 ---
 
@@ -103,6 +103,11 @@ The deploy repo (`command-center-test`) serves two pages:
 
 The landing page links to `/app/?setup` for new user onboarding (wizard-only mode) and `/app/` for existing users. The CC app detects the `?setup` URL parameter and shows only the SetupWizard, hiding the main UI until setup completes.
 
+**Setup Wizard (4 steps):** GitHub Token → Connect MCP → Initialize Claude → All Done
+- **Step 2 (Connect MCP):** Tabbed surface selector (Chat, Code, Cowork, PowerPoint, Excel) with surface-specific configuration instructions. Real-time green checkmarks appear as each surface makes its first authenticated tool call — driven by Firebase listener on `connectedSurfaces/`.
+- **Step 3 (Initialize Claude):** Universal init prompt for all surfaces — Claude detects its surface via `initiator` and completes setup automatically.
+- **Connected surfaces tracking:** MCP server writes `connectedSurfaces/{surface}/lastSeen` on every authenticated tool call with a valid `initiator`. Chat and Cowork are auto-linked (shared Claude.ai connector).
+
 ### Design Principle: Data Layer / Decision Layer
 
 CC is the data and persistence layer. Claude is the reasoning and decision layer. The MCP server is the interface between them.
@@ -131,7 +136,7 @@ CC is the data and persistence layer. Claude is the reasoning and decision layer
 │  │ Claude Chat  │◄───────────────►┌──────────┴───────────┐             │
 │  │ (claude.ai)  │  OAuth 2.1      │  CC MCP Server       │             │
 │  └─────────────┘                  │  (Cloud Run)         │             │
-│                                    │  13 tools, 30 skills │             │
+│                                    │  13 tools, 39 skills │             │
 │  ┌─────────────┐    MCP over HTTP │                      │──► GitHub   │
 │  │ Claude Code  │◄───────────────►│  Express + MCP SDK   │    Contents │
 │  │ (CLI)        │  CC API Key     └──────────────────────┘    API      │
@@ -234,6 +239,7 @@ These are persistent `.on('value')` subscriptions set up once at auth time. Each
 │  └─────────┘  └─────────┘  prefs      │ forests/  │ │
 │                             apiKeyHash │ trees/    │ │
 │                             profile    │ nodes/    │ │
+│                          connectedSurfaces          │
 │                                        └───────────┘ │
 └─────────────────────┬────────────────────────────────┘
                       │
@@ -242,13 +248,13 @@ These are persistent `.on('value')` subscriptions set up once at auth time. Each
           ▼           ▼           ▼
     CC Browser    MCP Server    Cloud Functions
     (listeners)   (reads/writes) (triggers/scheduled)
-    4 active      13 tools       domainProxy, documentCleanup
-                  30 skills
+    5 active      13 tools       domainProxy, documentCleanup
+                  33 skills
 ```
 
 ### Browser → Firebase
 - **Auth:** Firebase Auth (Google Sign-In) → UID
-- **Read:** 4 persistent listeners (bounded by `limitToLast`)
+- **Read:** 5 persistent listeners (bounded by `limitToLast` or naturally bounded)
 - **Write:** App config updates, preferences only — all ODRC/job/session writes go through MCP server
 - **On-demand reads:** `JobService.loadBefore()` for historical jobs
 
@@ -262,6 +268,18 @@ These are persistent `.on('value')` subscriptions set up once at auth time. Each
 - **External integration refs:** Concepts, ideas, and jobs support optional `externalRefs[]` arrays for linking to Jira, Linear, etc. Ideas also support `externalProjectKey`
 - **Test/Prod split:** Both environments share same Firebase RTDB — same data, different code versions
 - **Express body limit:** 10MB (raised from 1MB to support large document pushes)
+
+### Onboarding Init Flow
+- **Universal prompt:** `Initialize AI Command Center. Call the session tool with action "init" to get started.` — same text for all surfaces
+- **`session(init)`** sets `initialized: true` on the user's profile and returns a self-executing payload:
+  - `memoryLines` — 3 boot lines (surface-specific router skill name)
+  - `writeInstructions` — surface-specific HOW (Code: "Write to MEMORY.md", Chat: "Save to memory")
+  - `nextStep` — explicit bootstrap call with correct initiator
+  - `userMessage` — confirmation text for Claude to relay to user
+- **Post-init:** Claude writes memory, then calls `session(bootstrap)` which returns full orientation (instructions, active session, active idea, jobs, signal definitions)
+- **Subsequent sessions:** Memory boot lines trigger router skill load → `session(bootstrap)` → ready
+- **Router skills:** `cc-router-{chat|code|cowork}` — surface-specific entry points loaded from memory on every conversation start
+- **Source:** `session-bootstrap.ts` → `handleInit()`, `getMemoryLines()`, `getWriteInstructions()`
 
 ### Cloud Functions → Firebase
 - **domainProxy:** Authenticated CORS proxy for Porkbun/GoDaddy APIs (requires Firebase ID token)
